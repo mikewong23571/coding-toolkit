@@ -51,6 +51,7 @@ OXL_ID_KEY="@owlx_id"
 OXL_PANEL_KEY="@owlx_panel_pane"
 OXL_PANEL_WIDTH="${OXL_PANEL_WIDTH:-22}"
 OXL_PANEL_ON_NEW="${OXL_PANEL_ON_NEW:-1}"
+OXL_PANEL_INTERVAL="${OXL_PANEL_INTERVAL:-1}"
 OXL_LEFT_PANE_BOTTOM_PCT="${OXL_LEFT_PANE_BOTTOM_PCT:-25}"
 
 OXL_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -82,6 +83,7 @@ Env:
   OXL_WT_DIRNAME=.worktrees       (default)
   OXL_PANEL_ON_NEW=1              (default; open panel on new)
   OXL_PANEL_WIDTH=22              (default; percent)
+  OXL_PANEL_INTERVAL=1            (default; seconds)
   OXL_LEFT_PANE_BOTTOM_PCT=25     (default; left bottom pane percent)
   ~/.owlxrc (optional, overrides defaults unless env is set)
 
@@ -232,18 +234,50 @@ panel_pane_id() {
 
 panel_loop() {
   local sess="$1"
+  local last_snapshot=""
+  local -a last_lines=()
+  local first=1
+  session_id "$sess" >/dev/null
   while true; do
     tmux has-session -t "$sess" 2>/dev/null || exit 0
-    printf '\033[H\033[J'
-    echo "session:  $sess"
-    echo "id:       $(session_id "$sess")"
-    echo "layout:   $(tmux_get "$sess" "$OXL_LAYOUT_KEY")"
-    echo "repo:     $(tmux_get "$sess" "$OXL_REPO_KEY")"
-    echo "branch:   $(tmux_get "$sess" "$OXL_BRANCH_KEY")"
-    echo "cat:      $(tmux_get "$sess" "$OXL_CAT_KEY")"
-    echo "intent:"
-    echo "  $(tmux_get "$sess" "$OXL_INTENT_KEY")"
-    sleep 1
+    local snapshot layout repo branch cat intent id
+    snapshot="$(tmux display-message -p -t "$sess" \
+      "#{@owlx_layout}\t#{@owlx_repo}\t#{@owlx_branch}\t#{@owlx_cat}\t#{@owlx_intent}\t#{@owlx_id}")"
+    if [ "$snapshot" != "$last_snapshot" ]; then
+      IFS=$'\t' read -r layout repo branch cat intent id <<< "$snapshot"
+      local -a lines=(
+        "session:  $sess"
+        "id:       $id"
+        "layout:   $layout"
+        "repo:     $repo"
+        "branch:   $branch"
+        "cat:      $cat"
+        "intent:"
+        "  $intent"
+      )
+      if [ "$first" -eq 1 ]; then
+        printf '\033[H\033[J'
+        for i in "${!lines[@]}"; do
+          printf '\033[%d;1H\033[2K%s' "$((i+1))" "${lines[$i]}"
+        done
+        first=0
+      else
+        local i
+        for i in "${!lines[@]}"; do
+          if [ "${lines[$i]}" != "${last_lines[$i]-}" ]; then
+            printf '\033[%d;1H\033[2K%s' "$((i+1))" "${lines[$i]}"
+          fi
+        done
+        if [ "${#last_lines[@]}" -gt "${#lines[@]}" ]; then
+          for ((i=${#lines[@]}; i<${#last_lines[@]}; i++)); do
+            printf '\033[%d;1H\033[2K' "$((i+1))"
+          done
+        fi
+      fi
+      last_lines=("${lines[@]}")
+      last_snapshot="$snapshot"
+    fi
+    sleep "$OXL_PANEL_INTERVAL"
   done
 }
 
