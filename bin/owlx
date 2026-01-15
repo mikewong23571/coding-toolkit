@@ -161,6 +161,14 @@ gen_id() {
   fi
 }
 
+tsv_escape() {
+  local s="$1"
+  s=${s//$'\t'/ }
+  s=${s//$'\n'/ }
+  s=${s//$'\r'/ }
+  printf '%s' "$s"
+}
+
 session_id() {
   local sess="$1"
   local id
@@ -513,30 +521,59 @@ cmd_view() {
 cmd_ls() {
   require tmux
 
-  printf "%-8s %-10s %-18s %-28s %-14s %s\n" "ID" "LAYOUT" "REPO" "SESSION" "BRANCH" "INTENT"
-  printf "%-8s %-10s %-18s %-28s %-14s %s\n" "--" "------" "----" "-------" "------" "------"
-
   local sessions
   sessions="$(tmux ls -F '#S' 2>/dev/null || true)"
   [ -n "$sessions" ] || return 0
 
-  while read -r sess; do
-    is_owlx_session "$sess" || continue
+  local use_column=0
+  command -v column >/dev/null 2>&1 && use_column=1
 
-    local layout repo wt branch cat intent
-    layout="$(tmux_get "$sess" "$OXL_LAYOUT_KEY")"
-    repo="$(tmux_get "$sess" "$OXL_REPO_KEY")"
-    wt="$(tmux_get "$sess" "$OXL_WT_KEY")"
-    branch="$(tmux_get "$sess" "$OXL_BRANCH_KEY")"
-    cat="$(tmux_get "$sess" "$OXL_CAT_KEY")"
-    intent="$(tmux_get "$sess" "$OXL_INTENT_KEY")"
+  if [ "$use_column" -eq 1 ]; then
+    {
+      printf "ID\tLAYOUT\tREPO\tBRANCH\tINTENT\n"
+      printf "%s\t%s\t%s\t%s\t%s\n" "--" "------" "----" "------" "------"
+      while read -r sess; do
+        is_owlx_session "$sess" || continue
 
-    local id
-    id="$(session_id "$sess")"
+        local layout repo branch cat intent
+        layout="$(tmux_get "$sess" "$OXL_LAYOUT_KEY")"
+        repo="$(tmux_get "$sess" "$OXL_REPO_KEY")"
+        branch="$(tmux_get "$sess" "$OXL_BRANCH_KEY")"
+        cat="$(tmux_get "$sess" "$OXL_CAT_KEY")"
+        intent="$(tmux_get "$sess" "$OXL_INTENT_KEY")"
 
-    printf "%-8s %-10s %-18s %-28s %-14s %s\n" \
-      "$id" "$layout" "$repo" "$sess" "$branch" "[$cat] $intent"
-  done <<< "$sessions"
+        local id
+        id="$(session_id "$sess")"
+
+        printf "%s\t%s\t%s\t%s\t[%s] %s\n" \
+          "$(tsv_escape "$id")" \
+          "$(tsv_escape "$layout")" \
+          "$(tsv_escape "$repo")" \
+          "$(tsv_escape "$branch")" \
+          "$(tsv_escape "$cat")" \
+          "$(tsv_escape "$intent")"
+      done <<< "$sessions"
+    } | column -t -s $'\t'
+  else
+    printf "%-8s %-10s %-18s %-14s %s\n" "ID" "LAYOUT" "REPO" "BRANCH" "INTENT"
+    printf "%-8s %-10s %-18s %-14s %s\n" "--" "------" "----" "------" "------"
+    while read -r sess; do
+      is_owlx_session "$sess" || continue
+
+      local layout repo branch cat intent
+      layout="$(tmux_get "$sess" "$OXL_LAYOUT_KEY")"
+      repo="$(tmux_get "$sess" "$OXL_REPO_KEY")"
+      branch="$(tmux_get "$sess" "$OXL_BRANCH_KEY")"
+      cat="$(tmux_get "$sess" "$OXL_CAT_KEY")"
+      intent="$(tmux_get "$sess" "$OXL_INTENT_KEY")"
+
+      local id
+      id="$(session_id "$sess")"
+
+      printf "%-8s %-10s %-18s %-14s %s\n" \
+        "$id" "$layout" "$repo" "$branch" "[$cat] $intent"
+    done <<< "$sessions"
+  fi
 }
 
 cmd_del() {
