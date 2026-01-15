@@ -1,0 +1,589 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# owlx - minimal tmux + git-worktree session runtime
+#
+# Assumptions (per user):
+# 1) Layout: ~/projs/{main,fork,playground,archive}
+# 2) Every project is a git repo (directory under a layout)
+# 3) Repo-local .worktrees is ignored; 1 worktree <-> 1 session (MVP)
+# 4) new requires: intent + category(fix/feat/refactor/research/chore) + repo + worktree
+# 5) ls shows: layout, repo, branch, intent(+cat)
+# 6) tmux status line can show the same fields (see config snippet at bottom)
+
+# ---- Config ----
+# Load optional config file (shell-style assignments).
+OXL_ROOT_ENV_SET=0
+if [ "${OXL_ROOT+x}" = "x" ]; then
+  OXL_ROOT_ENV_SET=1
+  OXL_ROOT_ENV="$OXL_ROOT"
+fi
+OXL_WT_DIRNAME_ENV_SET=0
+if [ "${OXL_WT_DIRNAME+x}" = "x" ]; then
+  OXL_WT_DIRNAME_ENV_SET=1
+  OXL_WT_DIRNAME_ENV="$OXL_WT_DIRNAME"
+fi
+
+if [ -f "$HOME/.owlxrc" ]; then
+  # shellcheck source=/dev/null
+  . "$HOME/.owlxrc"
+fi
+
+if [ "$OXL_ROOT_ENV_SET" -eq 1 ]; then
+  OXL_ROOT="$OXL_ROOT_ENV"
+fi
+if [ "$OXL_WT_DIRNAME_ENV_SET" -eq 1 ]; then
+  OXL_WT_DIRNAME="$OXL_WT_DIRNAME_ENV"
+fi
+
+OXL_ROOT="${OXL_ROOT:-$HOME/projs}"         # layout root
+OXL_WT_DIRNAME="${OXL_WT_DIRNAME:-.worktrees}"
+OXL_FLAG_KEY="@owlx"                         # meta-tag to mark owlx sessions
+OXL_LAYOUT_KEY="@owlx_layout"
+OXL_REPO_KEY="@owlx_repo"
+OXL_REPO_DIR_KEY="@owlx_repo_dir"
+OXL_WT_KEY="@owlx_worktree"
+OXL_WT_DIR_KEY="@owlx_worktree_dir"
+OXL_BRANCH_KEY="@owlx_branch"
+OXL_CAT_KEY="@owlx_cat"
+OXL_INTENT_KEY="@owlx_intent"
+OXL_ID_KEY="@owlx_id"
+OXL_PANEL_KEY="@owlx_panel_pane"
+OXL_PANEL_WIDTH="${OXL_PANEL_WIDTH:-22}"
+OXL_PANEL_ON_NEW="${OXL_PANEL_ON_NEW:-1}"
+OXL_LEFT_PANE_BOTTOM_PCT="${OXL_LEFT_PANE_BOTTOM_PCT:-25}"
+
+OXL_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+die() { echo "owlx: $*" >&2; exit 1; }
+require() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+
+usage() {
+  cat >&2 <<'EOF'
+resume your intent — faster.
+
+Usage:
+  owlx new <layout> <repo> <worktree> <category> <intent...>
+  owlx ls
+  owlx resume <session|id>
+  owlx view <session|id>
+  owlx del <session|id>
+  owlx config [init|edit|tmux|gitignore]
+  owlx panel [on|off|toggle] [--session <session|id>] [--width <pct>]
+
+Layouts:
+  main | fork | playground | archive
+
+Categories:
+  fix | feat | refactor | research | chore
+
+Env:
+  OXL_ROOT=~/projs                (default)
+  OXL_WT_DIRNAME=.worktrees       (default)
+  OXL_PANEL_ON_NEW=1              (default; open panel on new)
+  OXL_PANEL_WIDTH=22              (default; percent)
+  OXL_LEFT_PANE_BOTTOM_PCT=25     (default; left bottom pane percent)
+  ~/.owlxrc (optional, overrides defaults unless env is set)
+
+Examples:
+  owlx new main coding-toolkit feat-a research "read docs and decide minimal MVP"
+  owlx ls
+  owlx resume main/coding-toolkit/feat-a
+  owlx view main/coding-toolkit/feat-a
+  owlx del main/coding-toolkit/feat-a
+EOF
+  exit 2
+}
+
+is_valid_layout() {
+  case "$1" in main|fork|playground|archive) return 0 ;; *) return 1 ;; esac
+}
+
+is_valid_cat() {
+  case "$1" in fix|feat|refactor|research|chore) return 0 ;; *) return 1 ;; esac
+}
+
+repo_path() {
+  local layout="$1" repo="$2"
+  echo "$OXL_ROOT/$layout/$repo"
+}
+
+wt_path() {
+  local repo_dir="$1" wt="$2"
+  echo "$repo_dir/$OXL_WT_DIRNAME/$wt"
+}
+
+session_name() {
+  local layout="$1" repo="$2" wt="$3"
+  echo "$layout/$repo/$wt"
+}
+
+ensure_repo() {
+  local repo_dir="$1"
+  [ -d "$repo_dir" ] || die "repo not found: $repo_dir"
+  git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
+    die "not a git repo: $repo_dir"
+}
+
+ensure_worktrees_ignored_repo_local() {
+  # Repo-local ignore: .git/info/exclude (won't touch global gitignore)
+  local repo_dir="$1"
+  mkdir -p "$repo_dir/.git/info"
+  local excl="$repo_dir/.git/info/exclude"
+  touch "$excl"
+  if ! grep -qxF "$OXL_WT_DIRNAME/" "$excl"; then
+    echo "$OXL_WT_DIRNAME/" >> "$excl"
+  fi
+}
+
+tmux_get() {
+  local sess="$1" key="$2"
+  tmux show-option -t "$sess" -qv "$key" 2>/dev/null || true
+}
+
+tmux_set() {
+  local sess="$1" key="$2" val="$3"
+  tmux set-option -t "$sess" "$key" "$val"
+}
+
+gen_id() {
+  local input="$1"
+  if command -v sha1sum >/dev/null 2>&1; then
+    printf '%s' "$input" | sha1sum | awk '{print substr($1,1,6)}'
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$input" | shasum | awk '{print substr($1,1,6)}'
+  elif command -v md5sum >/dev/null 2>&1; then
+    printf '%s' "$input" | md5sum | awk '{print substr($1,1,6)}'
+  elif command -v md5 >/dev/null 2>&1; then
+    printf '%s' "$input" | md5 | awk '{print substr($1,1,6)}'
+  else
+    printf '%s' "$input" | cksum | awk '{printf "%06d", $1 % 1000000}'
+  fi
+}
+
+session_id() {
+  local sess="$1"
+  local id
+  id="$(tmux_get "$sess" "$OXL_ID_KEY")"
+  if [ -z "$id" ]; then
+    id="$(gen_id "$sess")"
+    tmux_set "$sess" "$OXL_ID_KEY" "$id"
+  fi
+  echo "$id"
+}
+
+resolve_session() {
+  local token="$1"
+
+  if tmux has-session -t "$token" 2>/dev/null; then
+    echo "$token"
+    return 0
+  fi
+
+  local sessions
+  sessions="$(tmux ls -F '#S' 2>/dev/null || true)"
+  [ -n "$sessions" ] || die "no such session or id: $token"
+
+  local match="" count=0
+  while read -r sess; do
+    [ -n "$sess" ] || continue
+    is_owlx_session "$sess" || continue
+    if [ "$(session_id "$sess")" = "$token" ]; then
+      match="$sess"
+      count=$((count + 1))
+    fi
+  done <<< "$sessions"
+
+  if [ "$count" -eq 1 ]; then
+    echo "$match"
+    return 0
+  fi
+  if [ "$count" -gt 1 ]; then
+    die "ambiguous id: $token"
+  fi
+  die "no such session or id: $token"
+}
+
+setup_layout() {
+  local sess="$1"
+  local base_pane
+  base_pane="$(tmux list-panes -t "$sess" -F '#{pane_id}' | head -n1)"
+  [ -n "$base_pane" ] || return 0
+
+  if [ "$OXL_PANEL_ON_NEW" = "1" ]; then
+    if ! panel_pane_id "$sess"; then
+      local panel_id
+      panel_id="$(tmux split-window -h -p "$OXL_PANEL_WIDTH" -t "$base_pane" -P -F '#{pane_id}' \
+        "$OXL_SELF" panel --loop "$sess")"
+      tmux_set "$sess" "$OXL_PANEL_KEY" "$panel_id"
+    fi
+  fi
+
+  tmux split-window -v -p "$OXL_LEFT_PANE_BOTTOM_PCT" -t "$base_pane"
+  tmux select-pane -t "$base_pane"
+}
+
+panel_pane_id() {
+  local sess="$1" id
+  id="$(tmux_get "$sess" "$OXL_PANEL_KEY")"
+  [ -n "$id" ] || return 1
+  tmux list-panes -t "$sess" -F '#{pane_id}' | grep -qxF "$id"
+}
+
+panel_loop() {
+  local sess="$1"
+  while true; do
+    tmux has-session -t "$sess" 2>/dev/null || exit 0
+    printf '\033[H\033[J'
+    echo "session:  $sess"
+    echo "id:       $(session_id "$sess")"
+    echo "layout:   $(tmux_get "$sess" "$OXL_LAYOUT_KEY")"
+    echo "repo:     $(tmux_get "$sess" "$OXL_REPO_KEY")"
+    echo "branch:   $(tmux_get "$sess" "$OXL_BRANCH_KEY")"
+    echo "cat:      $(tmux_get "$sess" "$OXL_CAT_KEY")"
+    echo "intent:"
+    echo "  $(tmux_get "$sess" "$OXL_INTENT_KEY")"
+    sleep 1
+  done
+}
+
+cmd_panel() {
+  require tmux
+
+  if [ "${1:-}" = "--loop" ]; then
+    [ $# -eq 2 ] || die "panel loop requires a session name"
+    panel_loop "$2"
+    return 0
+  fi
+
+  local action="toggle"
+  local target=""
+  local width="$OXL_PANEL_WIDTH"
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      on|off|toggle) action="$1"; shift ;;
+      --session) target="$2"; shift 2 ;;
+      --width) width="$2"; shift 2 ;;
+      *) if [ -z "$target" ]; then target="$1"; else width="$1"; fi; shift ;;
+    esac
+  done
+
+  if [ -z "$target" ]; then
+    [ -n "${TMUX:-}" ] || die "session required (use: owlx panel --session <session|id>)"
+    target="$(tmux display-message -p '#S')"
+  fi
+
+  local sess
+  sess="$(resolve_session "$target")"
+
+  if panel_pane_id "$sess"; then
+    local id
+    id="$(tmux_get "$sess" "$OXL_PANEL_KEY")"
+    if [ "$action" = "on" ]; then
+      return 0
+    fi
+    tmux kill-pane -t "$id" 2>/dev/null || true
+    tmux set-option -t "$sess" -u "$OXL_PANEL_KEY" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  if [ "$action" = "off" ]; then
+    return 0
+  fi
+
+  local wt_dir
+  wt_dir="$(tmux_get "$sess" "$OXL_WT_DIR_KEY")"
+  local id
+  id="$(tmux split-window -h -p "$width" -t "$sess" -c "$wt_dir" -P -F '#{pane_id}' \
+    "$OXL_SELF" panel --loop "$sess")"
+  tmux_set "$sess" "$OXL_PANEL_KEY" "$id"
+}
+
+is_owlx_session() {
+  local sess="$1"
+  [ "$(tmux_get "$sess" "$OXL_FLAG_KEY")" = "1" ]
+}
+
+cmd_config() {
+  local cfg="$HOME/.owlxrc"
+  local sub="${1:-}"
+
+  case "$sub" in
+    "" )
+      echo "config:    $cfg"
+      echo "OXL_ROOT:  $OXL_ROOT"
+      echo "OXL_WT_DIRNAME: $OXL_WT_DIRNAME"
+      echo "precedence: env > config > defaults"
+      return 0
+      ;;
+    init )
+      if [ -e "$cfg" ]; then
+        die "config already exists: $cfg"
+      fi
+      cat >"$cfg" <<'EOF'
+# owlx config (shell-style assignments)
+OXL_ROOT="$HOME/projs"
+OXL_WT_DIRNAME=".worktrees"
+EOF
+      echo "created: $cfg"
+      return 0
+      ;;
+    edit )
+      "${EDITOR:-vi}" "$cfg"
+      return 0
+      ;;
+    tmux )
+      config_tmux "${2:-}"
+      return 0
+      ;;
+    gitignore )
+      config_gitignore "${2:-}"
+      return 0
+      ;;
+    * )
+      die "unknown config subcommand: $sub (use: owlx config [init|edit|tmux|gitignore])"
+      ;;
+  esac
+}
+
+print_tmux_snippet() {
+  cat <<'EOF'
+# Shows: id | layout | repo | branch | [cat] intent (only for owlx sessions)
+# set -g status-right '#{?@owlx,#{@owlx_id} | #{@owlx_layout} | #{@owlx_repo} | #{@owlx_branch} | [#{@owlx_cat}] #{@owlx_intent},}'
+EOF
+}
+
+config_tmux() {
+  local action="${1:-show}"
+  local conf="$HOME/.tmux.conf"
+  local start="# >>> owlx"
+  local end="# <<< owlx"
+
+  case "$action" in
+    ""|show )
+      print_tmux_snippet
+      return 0
+      ;;
+    install )
+      if [ -f "$conf" ] && grep -qF "$start" "$conf"; then
+        die "tmux config already installed in: $conf"
+      fi
+      {
+        echo "$start"
+        print_tmux_snippet
+        echo "$end"
+      } >> "$conf"
+      echo "installed tmux snippet in: $conf"
+      return 0
+      ;;
+    * )
+      die "unknown config tmux subcommand: $action (use: owlx config tmux [show|install])"
+      ;;
+  esac
+}
+
+print_gitignore_snippet() {
+  cat <<'EOF'
+.worktrees/
+EOF
+}
+
+config_gitignore() {
+  require git
+  local action="${1:-show}"
+  local conf
+  conf="$(git config --global core.excludesfile 2>/dev/null || true)"
+  if [ -z "$conf" ]; then
+    conf="$HOME/.gitignore_global"
+  fi
+
+  case "$action" in
+    ""|show )
+      echo "global excludes: $conf"
+      echo "line to add:"
+      print_gitignore_snippet
+      return 0
+      ;;
+    install )
+      mkdir -p "$(dirname "$conf")"
+      touch "$conf"
+      if ! grep -qxF ".worktrees/" "$conf"; then
+        echo ".worktrees/" >> "$conf"
+      fi
+      if [ -z "$(git config --global core.excludesfile 2>/dev/null || true)" ]; then
+        git config --global core.excludesfile "$conf"
+      fi
+      echo "installed gitignore entry in: $conf"
+      return 0
+      ;;
+    * )
+      die "unknown config gitignore subcommand: $action (use: owlx config gitignore [show|install])"
+      ;;
+  esac
+}
+
+cmd_new() {
+  require git
+  require tmux
+
+  [ $# -ge 5 ] || usage
+  local layout="$1"; shift
+  local repo="$1"; shift
+  local wt="$1"; shift
+  local cat="$1"; shift
+  local intent="$*"
+
+  is_valid_layout "$layout" || die "invalid layout: $layout"
+  is_valid_cat "$cat" || die "invalid category: $cat (use: fix|feat|refactor|research|chore)"
+  [ -n "$intent" ] || die "intent must be non-empty"
+
+  local repo_dir; repo_dir="$(repo_path "$layout" "$repo")"
+  ensure_repo "$repo_dir"
+  ensure_worktrees_ignored_repo_local "$repo_dir"
+
+  local wt_dir; wt_dir="$(wt_path "$repo_dir" "$wt")"
+  local sess; sess="$(session_name "$layout" "$repo" "$wt")"
+  local branch="$wt"   # MVP: branch == worktree name
+
+  # Safety: avoid name collision
+  if tmux has-session -t "$sess" 2>/dev/null; then
+    die "session already exists: $sess (use: owlx resume \"$sess\")"
+  fi
+
+  # Safety: avoid overwriting existing dir
+  if [ -e "$wt_dir" ]; then
+    die "worktree path already exists: $wt_dir"
+  fi
+
+  mkdir -p "$repo_dir/$OXL_WT_DIRNAME"
+
+  # Create worktree + branch
+  git -C "$repo_dir" worktree add -b "$branch" "$wt_dir" >/dev/null
+
+  # Create tmux session in worktree
+  tmux new-session -d -s "$sess" -c "$wt_dir"
+
+  # Meta-tag: mark as owlx-created (critical)
+  tmux_set "$sess" "$OXL_FLAG_KEY" "1"
+
+  # Store metadata
+  tmux_set "$sess" "$OXL_LAYOUT_KEY" "$layout"
+  tmux_set "$sess" "$OXL_REPO_KEY" "$repo"
+  tmux_set "$sess" "$OXL_REPO_DIR_KEY" "$repo_dir"
+  tmux_set "$sess" "$OXL_WT_KEY" "$wt"
+  tmux_set "$sess" "$OXL_WT_DIR_KEY" "$wt_dir"
+  tmux_set "$sess" "$OXL_BRANCH_KEY" "$branch"
+  tmux_set "$sess" "$OXL_CAT_KEY" "$cat"
+  tmux_set "$sess" "$OXL_INTENT_KEY" "$intent"
+  tmux_set "$sess" "$OXL_ID_KEY" "$(gen_id "$sess")"
+
+  setup_layout "$sess"
+
+  tmux attach -t "$sess"
+}
+
+cmd_resume() {
+  require tmux
+  [ $# -eq 1 ] || usage
+  local sess
+  sess="$(resolve_session "$1")"
+  tmux attach -t "$sess"
+}
+
+cmd_view() {
+  require tmux
+  [ $# -eq 1 ] || usage
+  local sess
+  sess="$(resolve_session "$1")"
+
+  echo "session:   $sess"
+  echo "id:        $(session_id "$sess")"
+  echo "owlx:      $(tmux_get "$sess" "$OXL_FLAG_KEY")"
+  echo "layout:    $(tmux_get "$sess" "$OXL_LAYOUT_KEY")"
+  echo "repo:      $(tmux_get "$sess" "$OXL_REPO_KEY")"
+  echo "worktree:  $(tmux_get "$sess" "$OXL_WT_KEY")"
+  echo "branch:    $(tmux_get "$sess" "$OXL_BRANCH_KEY")"
+  echo "cat:       $(tmux_get "$sess" "$OXL_CAT_KEY")"
+  echo "intent:    $(tmux_get "$sess" "$OXL_INTENT_KEY")"
+  echo "repo_dir:  $(tmux_get "$sess" "$OXL_REPO_DIR_KEY")"
+  echo "wt_dir:    $(tmux_get "$sess" "$OXL_WT_DIR_KEY")"
+}
+
+cmd_ls() {
+  require tmux
+
+  printf "%-8s %-10s %-18s %-28s %-14s %s\n" "ID" "LAYOUT" "REPO" "SESSION" "BRANCH" "INTENT"
+  printf "%-8s %-10s %-18s %-28s %-14s %s\n" "--" "------" "----" "-------" "------" "------"
+
+  local sessions
+  sessions="$(tmux ls -F '#S' 2>/dev/null || true)"
+  [ -n "$sessions" ] || return 0
+
+  while read -r sess; do
+    is_owlx_session "$sess" || continue
+
+    local layout repo wt branch cat intent
+    layout="$(tmux_get "$sess" "$OXL_LAYOUT_KEY")"
+    repo="$(tmux_get "$sess" "$OXL_REPO_KEY")"
+    wt="$(tmux_get "$sess" "$OXL_WT_KEY")"
+    branch="$(tmux_get "$sess" "$OXL_BRANCH_KEY")"
+    cat="$(tmux_get "$sess" "$OXL_CAT_KEY")"
+    intent="$(tmux_get "$sess" "$OXL_INTENT_KEY")"
+
+    local id
+    id="$(session_id "$sess")"
+
+    printf "%-8s %-10s %-18s %-28s %-14s %s\n" \
+      "$id" "$layout" "$repo" "$sess" "$branch" "[$cat] $intent"
+  done <<< "$sessions"
+}
+
+cmd_del() {
+  require tmux
+  require git
+  [ $# -eq 1 ] || usage
+  local sess
+  sess="$(resolve_session "$1")"
+  is_owlx_session "$sess" || die "refuse: not an owlx session: $sess"
+
+  local repo_dir wt_dir
+  repo_dir="$(tmux_get "$sess" "$OXL_REPO_DIR_KEY")"
+  wt_dir="$(tmux_get "$sess" "$OXL_WT_DIR_KEY")"
+  [ -n "$repo_dir" ] || die "missing repo_dir metadata for $sess"
+  [ -n "$wt_dir" ] || die "missing worktree_dir metadata for $sess"
+
+  # Kill tmux session first
+  tmux kill-session -t "$sess" 2>/dev/null || true
+
+  # Remove worktree directory registration (force)
+  if [ -d "$wt_dir" ]; then
+    git -C "$repo_dir" worktree remove "$wt_dir" -f >/dev/null || \
+      die "failed to remove worktree: $wt_dir"
+  fi
+
+  echo "deleted: $sess"
+}
+
+main() {
+  [ $# -ge 1 ] || usage
+  local cmd="$1"; shift
+  case "$cmd" in
+    new)     cmd_new "$@" ;;
+    ls)      cmd_ls "$@" ;;
+    resume)  cmd_resume "$@" ;;
+    view)    cmd_view "$@" ;;
+    del)     cmd_del "$@" ;;
+    config)  cmd_config "$@" ;;
+    panel)   cmd_panel "$@" ;;
+    help|-h|--help) usage ;;
+    *) die "unknown command: $cmd (use: owlx help)" ;;
+  esac
+}
+
+main "$@"
+
+# ---- tmux status line snippet (add to ~/.tmux.conf) ----
+# Shows: id | layout | repo | branch | [cat] intent (only for owlx sessions)
+#
+# set -g status-right '#{?@owlx,#{@owlx_id} | #{@owlx_layout} | #{@owlx_repo} | #{@owlx_branch} | [#{@owlx_cat}] #{@owlx_intent},}'
