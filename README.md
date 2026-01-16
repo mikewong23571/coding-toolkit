@@ -14,7 +14,8 @@ Intent (in your head)
   owlx resume <session|id>
   owlx view <session|id>
   owlx del <session|id>
-  owlx config [init|edit|tmux|gitignore]
+  owlx config [init|edit|tmux|gitignore|completion]
+  owlx config completion [install|uninstall]
   owlx panel [on|off|toggle] [--session <session|id>] [--width <pct>]
 
 Layouts:
@@ -47,6 +48,9 @@ Config helpers:
   owlx config tmux install
   owlx config gitignore
   owlx config gitignore install
+  owlx config completion
+  owlx config completion install
+  owlx config completion uninstall
 
 Panel helpers:
   owlx panel           # toggle right-side info panel (current tmux session)
