@@ -9,17 +9,27 @@ Intent (in your head)
   -> owlx resume (instantly back to that world)
 
 ## Usage
-  owlx new <layout> <repo> <worktree> <category> <intent...>
+  owlx new [--no-attach] [-C <layout/repo>] <category> <worktree> <intent...>
   owlx ls
+  owlx search|s [--cd]
   owlx resume <session|id>
   owlx view <session|id>
   owlx del <session|id>
   owlx config [init|edit|tmux|gitignore|completion]
   owlx config completion [install|uninstall]
   owlx panel [on|off|toggle] [--session <session|id>] [--width <pct>]
+  owlx status [on|off|toggle] [--session <session|id>]
 
 Layouts:
   main | fork | playground | archive
+
+Note:
+  owlx new must be run from a repo under OXL_ROOT/<layout>/<repo> unless -C is provided
+
+Search:
+  owlx search        # print repo path (use: cd "$(owlx search)")
+  owlx search --cd   # print shell cd command (use: eval "$(owlx search --cd)")
+  # requires: fzf
 
 Categories (keep these high-level and orthogonal):
   feat      - new or expanded capability
@@ -34,6 +44,9 @@ Environment:
   OXL_PANEL_ON_NEW=1        (default; open panel on new)
   OXL_PANEL_WIDTH=22        (default; percent)
   OXL_LEFT_PANE_BOTTOM_PCT=25 (default; left bottom pane percent)
+  OXL_STATUS_ON_NEW=0       (default; show info in status line on new)
+  OXL_STATUS_LINES=2        (default; status rows when enabled)
+  OXL_STATUS_RIGHT_LEN=120  (default; intent max length)
   ~/.owlxrc                 (optional; shell-style overrides)
 
 Example ~/.owlxrc:
@@ -58,8 +71,20 @@ Panel helpers:
   owlx panel off       # close panel
   owlx panel --width 18
 
+Status helpers:
+  owlx status          # toggle status-line info (current tmux session)
+  owlx status on       # enable status-line info
+  owlx status off      # disable status-line info
+  # Note: status on closes the panel; when OXL_STATUS_ON_NEW=1, the panel won't auto-open.
+  # Adds a second status line, leaving the default tmux line untouched.
+  # Default left widths: layout=10, cat=8, repo=20, branch=20 (override via OXL_STATUS_LEFT_FMT).
+
 Examples:
-  owlx new main coding-toolkit feat-a research "read docs and decide minimal MVP"
+  cd ~/projs/main/coding-toolkit
+  owlx new research feat-a "read docs and decide minimal MVP"
+  owlx new --no-attach research feat-a "prep worktree only"
+  owlx new -C main/coding-toolkit research feat-b "prep worktree only"
+  cd "$(owlx search)"
   owlx ls
   owlx resume main/coding-toolkit/feat-a
   owlx resume a1b2c3

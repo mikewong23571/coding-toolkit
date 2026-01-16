@@ -7,7 +7,7 @@ set -euo pipefail
 # 1) Layout: ~/projs/{main,fork,playground,archive}
 # 2) Every project is a git repo (directory under a layout)
 # 3) Repo-local .worktrees is ignored; 1 worktree <-> 1 session (MVP)
-# 4) new requires: intent + category(fix/feat/refactor/research/chore) + repo + worktree
+# 4) new requires: intent + category(fix/feat/refactor/research/chore) + worktree (run inside layout/repo)
 # 5) ls shows: layout, repo, branch, intent(+cat)
 # 6) tmux status line can show the same fields (see config snippet at bottom)
 
@@ -49,10 +49,25 @@ OXL_CAT_KEY="@owlx_cat"
 OXL_INTENT_KEY="@owlx_intent"
 OXL_ID_KEY="@owlx_id"
 OXL_PANEL_KEY="@owlx_panel_pane"
+OXL_STATUS_KEY="@owlx_status_on"
+OXL_STATUS_SAVED_KEY="@owlx_status_saved"
+OXL_STATUS_FORMAT0_SAVED_KEY="@owlx_status_format0_saved"
+OXL_STATUS_FORMAT1_SAVED_KEY="@owlx_status_format1_saved"
 OXL_PANEL_WIDTH="${OXL_PANEL_WIDTH:-22}"
 OXL_PANEL_ON_NEW="${OXL_PANEL_ON_NEW:-1}"
 OXL_PANEL_INTERVAL="${OXL_PANEL_INTERVAL:-1}"
 OXL_LEFT_PANE_BOTTOM_PCT="${OXL_LEFT_PANE_BOTTOM_PCT:-25}"
+OXL_STATUS_ON_NEW="${OXL_STATUS_ON_NEW:-0}"
+OXL_STATUS_LINES="${OXL_STATUS_LINES:-2}"
+OXL_STATUS_RIGHT_LEN="${OXL_STATUS_RIGHT_LEN:-120}"
+if [ -z "${OXL_STATUS_LEFT_FMT+x}" ]; then
+  # Intent: fixed-width, scan-friendly fields on the owlx status line.
+  OXL_STATUS_LEFT_FMT='#{?@owlx,#{p-10:#{=10:#{@owlx_layout}}} | #{p-8:#{=8:#{@owlx_cat}}} | #{p-20:#{=20:#{@owlx_repo}}} | #{p-20:#{=20:#{@owlx_branch}}},}'
+fi
+if [ -z "${OXL_STATUS_RIGHT_FMT+x}" ]; then
+  # Intent: keep long intents bounded so the status line stays readable.
+  OXL_STATUS_RIGHT_FMT="#{?@owlx,#{=${OXL_STATUS_RIGHT_LEN}:#{@owlx_intent}},}"
+fi
 
 OXL_BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OXL_HOME="$(cd "$OXL_BIN_DIR/.." && pwd)"
@@ -66,17 +81,27 @@ usage() {
 resume your intent — faster.
 
 Usage:
-  owlx new <layout> <repo> <worktree> <category> <intent...>
+  owlx new [--no-attach] [-C <layout/repo>] <category> <worktree> <intent...>
   owlx ls
+  owlx search|s [--cd]
   owlx resume <session|id>
   owlx view <session|id>
   owlx del <session|id>
   owlx config [init|edit|tmux|gitignore|completion]
   owlx config completion [install|uninstall]
   owlx panel [on|off|toggle] [--session <session|id>] [--width <pct>]
+  owlx status [on|off|toggle] [--session <session|id>]
 
 Layouts:
   main | fork | playground | archive
+
+Note:
+  owlx new must be run from a repo under OXL_ROOT/<layout>/<repo> unless -C is provided
+
+Search:
+  owlx search        # print repo path (use: cd "$(owlx search)")
+  owlx search --cd   # print shell cd command (use: eval "$(owlx search --cd)")
+  # requires: fzf
 
 Categories:
   fix | feat | refactor | research | chore
@@ -88,10 +113,17 @@ Env:
   OXL_PANEL_WIDTH=22              (default; percent)
   OXL_PANEL_INTERVAL=1            (default; seconds)
   OXL_LEFT_PANE_BOTTOM_PCT=25     (default; left bottom pane percent)
+  OXL_STATUS_ON_NEW=0             (default; show info in status line on new)
+  OXL_STATUS_LINES=2              (default; status line rows when enabled)
+  OXL_STATUS_RIGHT_LEN=120        (default; intent max length)
   ~/.owlxrc (optional, overrides defaults unless env is set)
 
 Examples:
-  owlx new main coding-toolkit feat-a research "read docs and decide minimal MVP"
+  cd ~/projs/main/coding-toolkit
+  owlx new research feat-a "read docs and decide minimal MVP"
+  owlx new --no-attach research feat-a "prep worktree only"
+  owlx new -C main/coding-toolkit research feat-b "prep worktree only"
+  cd "$(owlx search)"
   owlx ls
   owlx resume main/coding-toolkit/feat-a
   owlx view main/coding-toolkit/feat-a
@@ -108,6 +140,56 @@ is_valid_layout() {
 
 is_valid_cat() {
   case "$1" in fix|feat|refactor|research|chore) return 0 ;; *) return 1 ;; esac
+}
+
+detect_repo_context() {
+  local repo_dir root rel layout repo
+  repo_dir="$(git -C "${PWD}" rev-parse --show-toplevel 2>/dev/null)" || \
+    die "not inside a git repo"
+  repo_dir="$(cd "$repo_dir" && pwd -P)"
+  root="$(cd "$OXL_ROOT" 2>/dev/null && pwd -P)" || \
+    die "missing OXL_ROOT directory: $OXL_ROOT"
+
+  case "$repo_dir" in
+    "$root"/*/*) rel="${repo_dir#"$root/"}" ;;
+    *) die "repo must live under $root/<layout>/<repo>" ;;
+  esac
+
+  layout="${rel%%/*}"
+  repo="${rel#*/}"
+  if [ -z "$layout" ] || [ -z "$repo" ] || [[ "$repo" == *"/"* ]]; then
+    die "repo must live under $root/<layout>/<repo>"
+  fi
+
+  is_valid_layout "$layout" || die "invalid layout: $layout"
+
+  printf '%s\t%s\t%s\n' "$layout" "$repo" "$repo_dir"
+}
+
+parse_layout_repo() {
+  local input="$1" root layout repo repo_dir
+  case "$input" in
+    */*) ;;
+    *) die "-C expects <layout>/<repo>" ;;
+  esac
+
+  layout="${input%%/*}"
+  repo="${input#*/}"
+  if [ -z "$layout" ] || [ -z "$repo" ] || [[ "$repo" == *"/"* ]]; then
+    die "-C expects <layout>/<repo>"
+  fi
+  is_valid_layout "$layout" || die "invalid layout: $layout"
+
+  root="$(cd "$OXL_ROOT" 2>/dev/null && pwd -P)" || \
+    die "missing OXL_ROOT directory: $OXL_ROOT"
+  repo_dir="$root/$layout/$repo"
+  if [ ! -d "$repo_dir" ]; then
+    die "repo not found: $repo_dir"
+  fi
+  repo_dir="$(cd "$repo_dir" 2>/dev/null && pwd -P)" || \
+    die "repo not found: $repo_dir"
+
+  printf '%s\t%s\t%s\n' "$layout" "$repo" "$repo_dir"
 }
 
 repo_path() {
@@ -225,7 +307,11 @@ setup_layout() {
   base_pane="$(tmux list-panes -t "$sess" -F '#{pane_id}' | head -n1)"
   [ -n "$base_pane" ] || return 0
 
-  if [ "$OXL_PANEL_ON_NEW" = "1" ]; then
+  if [ "$OXL_STATUS_ON_NEW" = "1" ]; then
+    status_on "$sess"
+  fi
+
+  if [ "$OXL_PANEL_ON_NEW" = "1" ] && [ "$OXL_STATUS_ON_NEW" != "1" ]; then
     if ! panel_pane_id "$sess"; then
       local panel_id
       panel_id="$(tmux split-window -h -p "$OXL_PANEL_WIDTH" -t "$base_pane" -P -F '#{pane_id}' \
@@ -245,6 +331,75 @@ panel_pane_id() {
   tmux list-panes -t "$sess" -F '#{pane_id}' | grep -qxF "$id"
 }
 
+status_is_on() {
+  local sess="$1"
+  [ "$(tmux_get "$sess" "$OXL_STATUS_KEY")" = "1" ]
+}
+
+status_on() {
+  local sess="$1"
+  status_is_on "$sess" && return 0
+
+  # Intent: keep tmux default line intact, add owlx info on a second line.
+  if panel_pane_id "$sess"; then
+    local panel_id
+    panel_id="$(tmux_get "$sess" "$OXL_PANEL_KEY")"
+    tmux kill-pane -t "$panel_id" 2>/dev/null || true
+    tmux set-option -t "$sess" -u "$OXL_PANEL_KEY" >/dev/null 2>&1 || true
+  fi
+
+  tmux_set "$sess" "$OXL_STATUS_SAVED_KEY" "$(tmux_get "$sess" status)"
+  tmux_set "$sess" "$OXL_STATUS_FORMAT0_SAVED_KEY" "$(tmux_get "$sess" 'status-format[0]')"
+  tmux_set "$sess" "$OXL_STATUS_FORMAT1_SAVED_KEY" "$(tmux_get "$sess" 'status-format[1]')"
+
+  local line_fmt
+  line_fmt="${OXL_STATUS_LINE_FMT:-#[align=left]${OXL_STATUS_LEFT_FMT}#[align=right]${OXL_STATUS_RIGHT_FMT}}"
+
+  tmux set-option -t "$sess" status "$OXL_STATUS_LINES"
+  if [ -z "$(tmux_get "$sess" 'status-format[0]')" ]; then
+    local fmt0
+    fmt0="$(tmux show-option -gqv 'status-format[0]')"
+    if [ -n "$fmt0" ]; then
+      tmux set-option -t "$sess" "status-format[0]" "$fmt0"
+    fi
+  fi
+  tmux set-option -t "$sess" "status-format[1]" "$line_fmt"
+  tmux_set "$sess" "$OXL_STATUS_KEY" "1"
+}
+
+status_off() {
+  local sess="$1"
+  status_is_on "$sess" || return 0
+
+  local status_val format0 format1
+  status_val="$(tmux_get "$sess" "$OXL_STATUS_SAVED_KEY")"
+  format0="$(tmux_get "$sess" "$OXL_STATUS_FORMAT0_SAVED_KEY")"
+  format1="$(tmux_get "$sess" "$OXL_STATUS_FORMAT1_SAVED_KEY")"
+
+  if [ -n "$status_val" ]; then
+    tmux set-option -t "$sess" status "$status_val"
+  else
+    tmux set-option -t "$sess" -u status >/dev/null 2>&1 || true
+  fi
+
+  if [ -n "$format1" ]; then
+    tmux set-option -t "$sess" "status-format[1]" "$format1"
+  else
+    tmux set-option -t "$sess" -u "status-format[1]" >/dev/null 2>&1 || true
+  fi
+
+  if [ -n "$format0" ]; then
+    tmux set-option -t "$sess" "status-format[0]" "$format0"
+  else
+    tmux set-option -t "$sess" -u "status-format[0]" >/dev/null 2>&1 || true
+  fi
+
+  tmux set-option -t "$sess" -u "$OXL_STATUS_KEY" >/dev/null 2>&1 || true
+  tmux set-option -t "$sess" -u "$OXL_STATUS_SAVED_KEY" >/dev/null 2>&1 || true
+  tmux set-option -t "$sess" -u "$OXL_STATUS_FORMAT0_SAVED_KEY" >/dev/null 2>&1 || true
+  tmux set-option -t "$sess" -u "$OXL_STATUS_FORMAT1_SAVED_KEY" >/dev/null 2>&1 || true
+}
+
 panel_loop() {
   local sess="$1"
   local last_snapshot=""
@@ -255,11 +410,10 @@ panel_loop() {
     tmux has-session -t "$sess" 2>/dev/null || exit 0
     local snapshot layout repo branch cat intent id
     snapshot="$(tmux display-message -p -t "$sess" \
-      "#{@owlx_layout}\t#{@owlx_repo}\t#{@owlx_branch}\t#{@owlx_cat}\t#{@owlx_intent}\t#{@owlx_id}")"
+      $'#{@owlx_layout}\t#{@owlx_repo}\t#{@owlx_branch}\t#{@owlx_cat}\t#{@owlx_intent}\t#{@owlx_id}')"
     if [ "$snapshot" != "$last_snapshot" ]; then
       IFS=$'\t' read -r layout repo branch cat intent id <<< "$snapshot"
       local -a lines=(
-        "session:  $sess"
         "id:       $id"
         "layout:   $layout"
         "repo:     $repo"
@@ -310,7 +464,11 @@ cmd_panel() {
   while [ $# -gt 0 ]; do
     case "$1" in
       on|off|toggle) action="$1"; shift ;;
-      --session) target="$2"; shift 2 ;;
+      --session)
+        [ $# -ge 2 ] || die "--session requires <session|id>"
+        target="$2"
+        shift 2
+        ;;
       --width) width="$2"; shift 2 ;;
       *) if [ -z "$target" ]; then target="$1"; else width="$1"; fi; shift ;;
     esac
@@ -347,6 +505,46 @@ cmd_panel() {
   tmux_set "$sess" "$OXL_PANEL_KEY" "$id"
 }
 
+cmd_status() {
+  require tmux
+
+  local action="toggle"
+  local target=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      on|off|toggle) action="$1"; shift ;;
+      --session)
+        [ $# -ge 2 ] || die "--session requires <session|id>"
+        target="$2"
+        shift 2
+        ;;
+      *) if [ -z "$target" ]; then target="$1"; fi; shift ;;
+    esac
+  done
+
+  if [ -z "$target" ]; then
+    [ -n "${TMUX:-}" ] || die "session required (use: owlx status --session <session|id>)"
+    target="$(tmux display-message -p '#S')"
+  fi
+
+  local sess
+  sess="$(resolve_session "$target")"
+  is_owlx_session "$sess" || die "refuse: not an owlx session: $sess"
+
+  case "$action" in
+    on) status_on "$sess" ;;
+    off) status_off "$sess" ;;
+    toggle)
+      if status_is_on "$sess"; then
+        status_off "$sess"
+      else
+        status_on "$sess"
+      fi
+      ;;
+  esac
+}
+
 is_owlx_session() {
   local sess="$1"
   [ "$(tmux_get "$sess" "$OXL_FLAG_KEY")" = "1" ]
@@ -361,6 +559,9 @@ cmd_config() {
       echo "config:    $cfg"
       echo "OXL_ROOT:  $OXL_ROOT"
       echo "OXL_WT_DIRNAME: $OXL_WT_DIRNAME"
+      echo "OXL_STATUS_ON_NEW: $OXL_STATUS_ON_NEW"
+      echo "OXL_STATUS_LINES: $OXL_STATUS_LINES"
+      echo "OXL_STATUS_RIGHT_LEN: $OXL_STATUS_RIGHT_LEN"
       echo "precedence: env > config > defaults"
       return 0
       ;;
@@ -400,8 +601,11 @@ EOF
 
 print_tmux_snippet() {
   cat <<'EOF'
-# Shows: id | layout | repo | branch | [cat] intent (only for owlx sessions)
-# set -g status-right '#{?@owlx,#{@owlx_id} | #{@owlx_layout} | #{@owlx_repo} | #{@owlx_branch} | [#{@owlx_cat}] #{@owlx_intent},}'
+# Adds a second status line (owlx sessions only), leaving line 1 untouched:
+# line 2 left:  layout | cat | repo | branch (fixed widths)
+# line 2 right: intent (trimmed to 120)
+# set -g status 2
+# set -g status-format[1] '#[align=left]#{?@owlx,#{p-10:#{=10:#{@owlx_layout}}} | #{p-8:#{=8:#{@owlx_cat}}} | #{p-20:#{=20:#{@owlx_repo}}} | #{p-20:#{=20:#{@owlx_branch}}},}#[align=right]#{?@owlx,#{=120:#{@owlx_intent}},}'
 EOF
 }
 
@@ -535,22 +739,71 @@ config_completion() {
   esac
 }
 
+cmd_search() {
+  require fzf
+  require git
+
+  local root
+  root="$(cd "$OXL_ROOT" 2>/dev/null && pwd -P)" || \
+    die "missing OXL_ROOT directory: $OXL_ROOT"
+
+  local selection
+  selection="$(
+    find "$root" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | while read -r dir; do
+      git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
+      local rel layout
+      rel="${dir#"$root/"}"
+      layout="${rel%%/*}"
+      is_valid_layout "$layout" || continue
+      printf '%s\t%s\n' "$rel" "$dir"
+    done | fzf --prompt='repo> ' --delimiter=$'\t' --with-nth=1 --exit-0
+  )" || return 1
+
+  [ -n "$selection" ] || return 1
+  local path
+  path="${selection#*$'\t'}"
+
+  if [ "${1:-}" = "--cd" ]; then
+    printf 'cd %q\n' "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
 cmd_new() {
   require git
   require tmux
 
-  [ $# -ge 5 ] || usage
-  local layout="$1"; shift
-  local repo="$1"; shift
-  local wt="$1"; shift
+  local attach=1
+  local layout_repo=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -d|--detached|--no-attach) attach=0; shift ;;
+      -C)
+        [ $# -ge 2 ] || die "-C requires <layout/repo>"
+        layout_repo="$2"
+        shift 2
+        ;;
+      --) shift; break ;;
+      -*) die "unknown option: $1" ;;
+      *) break ;;
+    esac
+  done
+
+  [ $# -ge 3 ] || usage
   local cat="$1"; shift
+  local wt="$1"; shift
   local intent="$*"
 
-  is_valid_layout "$layout" || die "invalid layout: $layout"
   is_valid_cat "$cat" || die "invalid category: $cat (use: fix|feat|refactor|research|chore)"
   [ -n "$intent" ] || die "intent must be non-empty"
 
-  local repo_dir; repo_dir="$(repo_path "$layout" "$repo")"
+  local layout repo repo_dir
+  if [ -n "$layout_repo" ]; then
+    IFS=$'\t' read -r layout repo repo_dir < <(parse_layout_repo "$layout_repo")
+  else
+    IFS=$'\t' read -r layout repo repo_dir < <(detect_repo_context)
+  fi
   ensure_repo "$repo_dir"
   ensure_worktrees_ignored_repo_local "$repo_dir"
 
@@ -592,7 +845,11 @@ cmd_new() {
 
   setup_layout "$sess"
 
-  tmux attach -t "$sess"
+  if [ "$attach" -eq 1 ]; then
+    tmux attach -t "$sess"
+  else
+    echo "created: $sess"
+  fi
 }
 
 cmd_resume() {
@@ -712,11 +969,13 @@ main() {
   case "$cmd" in
     new)     cmd_new "$@" ;;
     ls)      cmd_ls "$@" ;;
+    search|s) cmd_search "$@" ;;
     resume)  cmd_resume "$@" ;;
     view)    cmd_view "$@" ;;
     del)     cmd_del "$@" ;;
     config)  cmd_config "$@" ;;
     panel)   cmd_panel "$@" ;;
+    status)  cmd_status "$@" ;;
     help|-h|--help) usage ;;
     *) die "unknown command: $cmd (use: owlx help)" ;;
   esac
@@ -725,6 +984,9 @@ main() {
 main "$@"
 
 # ---- tmux status line snippet (add to ~/.tmux.conf) ----
-# Shows: id | layout | repo | branch | [cat] intent (only for owlx sessions)
+# Adds a second status line (owlx sessions only), leaving line 1 untouched:
+# line 2 left:  layout | cat | repo | branch (fixed widths)
+# line 2 right: intent (trimmed to 120)
 #
-# set -g status-right '#{?@owlx,#{@owlx_id} | #{@owlx_layout} | #{@owlx_repo} | #{@owlx_branch} | [#{@owlx_cat}] #{@owlx_intent},}'
+# set -g status 2
+# set -g status-format[1] '#[align=left]#{?@owlx,#{p-10:#{=10:#{@owlx_layout}}} | #{p-8:#{=8:#{@owlx_cat}}} | #{p-20:#{=20:#{@owlx_repo}}} | #{p-20:#{=20:#{@owlx_branch}}},}#[align=right]#{?@owlx,#{=120:#{@owlx_intent}},}'
