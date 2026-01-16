@@ -54,7 +54,9 @@ OXL_PANEL_ON_NEW="${OXL_PANEL_ON_NEW:-1}"
 OXL_PANEL_INTERVAL="${OXL_PANEL_INTERVAL:-1}"
 OXL_LEFT_PANE_BOTTOM_PCT="${OXL_LEFT_PANE_BOTTOM_PCT:-25}"
 
-OXL_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+OXL_BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OXL_HOME="$(cd "$OXL_BIN_DIR/.." && pwd)"
+OXL_SELF="$OXL_BIN_DIR/$(basename "${BASH_SOURCE[0]}")"
 
 die() { echo "owlx: $*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
@@ -69,7 +71,8 @@ Usage:
   owlx resume <session|id>
   owlx view <session|id>
   owlx del <session|id>
-  owlx config [init|edit|tmux|gitignore]
+  owlx config [init|edit|tmux|gitignore|completion]
+  owlx config completion [install|uninstall]
   owlx panel [on|off|toggle] [--session <session|id>] [--width <pct>]
 
 Layouts:
@@ -93,6 +96,8 @@ Examples:
   owlx resume main/coding-toolkit/feat-a
   owlx view main/coding-toolkit/feat-a
   owlx del main/coding-toolkit/feat-a
+  owlx config completion install
+  owlx config completion uninstall
 EOF
   exit 2
 }
@@ -383,8 +388,12 @@ EOF
       config_gitignore "${2:-}"
       return 0
       ;;
+    completion )
+      config_completion "${2:-}"
+      return 0
+      ;;
     * )
-      die "unknown config subcommand: $sub (use: owlx config [init|edit|tmux|gitignore])"
+      die "unknown config subcommand: $sub (use: owlx config [init|edit|tmux|gitignore|completion])"
       ;;
   esac
 }
@@ -461,6 +470,67 @@ config_gitignore() {
       ;;
     * )
       die "unknown config gitignore subcommand: $action (use: owlx config gitignore [show|install])"
+      ;;
+  esac
+}
+
+print_completion_snippet() {
+  cat <<'EOF'
+# >>> owlx completion
+[ -r "$HOME/.bash_completion.d/owlx" ] && . "$HOME/.bash_completion.d/owlx"
+# <<< owlx completion
+EOF
+}
+
+config_completion() {
+  local action="${1:-show}"
+  local dest_dir="$HOME/.bash_completion.d"
+  local dest="$dest_dir/owlx"
+  local conf="$HOME/.bash_completion"
+  local start="# >>> owlx completion"
+  local end="# <<< owlx completion"
+  local src="$OXL_HOME/completions/owlx.bash"
+
+  case "$action" in
+    ""|show )
+      echo "completion file: $dest"
+      echo "source file:     $src"
+      echo "loader:          $conf"
+      echo "snippet to load:"
+      print_completion_snippet
+      return 0
+      ;;
+    install )
+      [ -f "$src" ] || die "missing completion source: $src"
+      mkdir -p "$dest_dir"
+      cp "$src" "$dest"
+      if [ ! -f "$conf" ] || ! grep -qF "$start" "$conf"; then
+        {
+          echo ""
+          print_completion_snippet
+        } >> "$conf"
+      fi
+      echo "installed completion: $dest"
+      echo "reload shell or: source $conf"
+      return 0
+      ;;
+    uninstall )
+      rm -f "$dest"
+      if [ -f "$conf" ] && grep -qF "$start" "$conf"; then
+        local tmp
+        tmp="$(mktemp "${conf}.tmp.XXXX")"
+        awk -v s="$start" -v e="$end" '
+          $0 == s {skip=1; next}
+          $0 == e {skip=0; next}
+          !skip {print}
+        ' "$conf" > "$tmp"
+        mv "$tmp" "$conf"
+      fi
+      echo "removed completion: $dest"
+      return 0
+      ;;
+    * )
+      die "unknown config completion subcommand: $action (use: owlx config completion [install|uninstall])"
       ;;
   esac
 }
