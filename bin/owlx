@@ -73,6 +73,36 @@ OXL_BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OXL_HOME="$(cd "$OXL_BIN_DIR/.." && pwd)"
 OXL_SELF="$OXL_BIN_DIR/$(basename "${BASH_SOURCE[0]}")"
 
+readonly OXL_ROOT
+readonly OXL_WT_DIRNAME
+readonly OXL_FLAG_KEY
+readonly OXL_LAYOUT_KEY
+readonly OXL_REPO_KEY
+readonly OXL_REPO_DIR_KEY
+readonly OXL_WT_KEY
+readonly OXL_WT_DIR_KEY
+readonly OXL_BRANCH_KEY
+readonly OXL_CAT_KEY
+readonly OXL_INTENT_KEY
+readonly OXL_ID_KEY
+readonly OXL_PANEL_KEY
+readonly OXL_STATUS_KEY
+readonly OXL_STATUS_SAVED_KEY
+readonly OXL_STATUS_FORMAT0_SAVED_KEY
+readonly OXL_STATUS_FORMAT1_SAVED_KEY
+readonly OXL_PANEL_WIDTH
+readonly OXL_PANEL_ON_NEW
+readonly OXL_PANEL_INTERVAL
+readonly OXL_LEFT_PANE_BOTTOM_PCT
+readonly OXL_STATUS_ON_NEW
+readonly OXL_STATUS_LINES
+readonly OXL_STATUS_RIGHT_LEN
+readonly OXL_STATUS_LEFT_FMT
+readonly OXL_STATUS_RIGHT_FMT
+readonly OXL_BIN_DIR
+readonly OXL_HOME
+readonly OXL_SELF
+
 die() { echo "owlx: $*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
