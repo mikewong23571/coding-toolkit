@@ -141,5 +141,7 @@ bin/lint-md
 This uses `npx` to run `markdownlint-cli2` with the repo config.
 
 ## Development
+
 Lint:
-  scripts/shellcheck.sh
+
+- `scripts/shellcheck.sh`

@@ -117,6 +117,7 @@ Usage:
   owlx resume <session|id>
   owlx view <session|id>
   owlx del <session|id>
+  owlx notify [--session <session|id>] [--stdin|-] [--topic <name>|--url <url>] <json>
   owlx config [init|edit|tmux|gitignore|completion]
   owlx config completion [install|uninstall]
   owlx panel [on|off|toggle] [--session <session|id>] [--width <pct>]
@@ -158,6 +159,7 @@ Examples:
   owlx resume main/coding-toolkit/feat-a
   owlx view main/coding-toolkit/feat-a
   owlx del main/coding-toolkit/feat-a
+  owlx notify --topic my-topic '{"type":"agent-turn-complete","cwd":"/path"}'
   owlx config completion install
   owlx config completion uninstall
 EOF
@@ -286,6 +288,34 @@ tsv_escape() {
   s=${s//$'\n'/ }
   s=${s//$'\r'/ }
   printf '%s' "$s"
+}
+
+json_get() {
+  local json="$1" key="$2"
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$json" | python3 -c 'import json, sys
+key = sys.argv[1]
+try:
+  data = json.load(sys.stdin)
+except Exception:
+  sys.exit(0)
+if not isinstance(data, dict):
+  sys.exit(0)
+val = data.get(key, "")
+if isinstance(val, list):
+  print("\n".join(str(x) for x in val))
+elif val is None:
+  print("")
+else:
+  print(val)
+' "$key"
+    return 0
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$json" | jq -r --arg k "$key" '.[$k] // ""'
+    return 0
+  fi
+  die "missing dependency: python3 or jq"
 }
 
 session_id() {
@@ -575,9 +605,169 @@ cmd_status() {
   esac
 }
 
+cmd_notify() {
+  require tmux
+
+  local target="" json="" use_stdin=0 topic="" url=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session)
+        [ $# -ge 2 ] || die "--session requires <session|id>"
+        target="$2"
+        shift 2
+        ;;
+      --stdin|-)
+        use_stdin=1
+        shift
+        ;;
+      --topic)
+        [ $# -ge 2 ] || die "--topic requires <name>"
+        topic="$2"
+        shift 2
+        ;;
+      --url)
+        [ $# -ge 2 ] || die "--url requires <url>"
+        url="$2"
+        shift 2
+        ;;
+      *)
+        if [ -z "$json" ]; then
+          json="$1"
+        else
+          die "unexpected arg: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [ "$use_stdin" -eq 1 ]; then
+    json="$(cat)"
+  fi
+  [ -n "$json" ] || die "notify requires JSON payload"
+
+  local event_type
+  event_type="$(json_get "$json" "type")"
+  [ "$event_type" = "agent-turn-complete" ] || return 0
+
+  local sess=""
+  if [ -n "$target" ]; then
+    sess="$(resolve_session "$target")"
+  else
+    sess="$(resolve_notify_session "$json" || true)"
+  fi
+
+  [ -n "$sess" ] || return 0
+
+  local attached="0"
+  attached="$(tmux display-message -p -t "$sess" '#{session_attached}' 2>/dev/null || echo 0)"
+  if [ "${attached:-0}" -gt 0 ] 2>/dev/null; then
+    return 0
+  fi
+
+  if [ -z "$url" ] && [ -z "$topic" ]; then
+    topic="owlx-alert-7m3k9q"
+  fi
+
+  if [ -z "$url" ] && [ -n "$topic" ]; then
+    url="https://ntfy.sh/$topic"
+  fi
+
+  if [ -n "$url" ]; then
+    require curl
+    print_notify_meta "$sess" | curl -fsS -H 'Markdown: yes' -H 'Content-Type: text/markdown' --data-binary @- "$url" >/dev/null
+    return 0
+  fi
+
+  print_notify_meta "$sess"
+}
+
 is_owlx_session() {
   local sess="$1"
   [ "$(tmux_get "$sess" "$OXL_FLAG_KEY")" = "1" ]
+}
+
+resolve_notify_session() {
+  local json="$1"
+
+  if [ -n "${TMUX_PANE:-}" ]; then
+    local sess=""
+    sess="$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null || true)"
+    if [ -n "$sess" ] && is_owlx_session "$sess"; then
+      echo "$sess"
+      return 0
+    fi
+  fi
+
+  local cwd=""
+  cwd="$(json_get "$json" "cwd")"
+  if [ -n "$cwd" ]; then
+    local cwd_resolved=""
+    if cwd_resolved="$(cd "$cwd" 2>/dev/null && pwd -P)"; then
+      cwd="$cwd_resolved"
+    else
+      cwd=""
+    fi
+  fi
+  [ -n "$cwd" ] || return 1
+
+  local sessions
+  sessions="$(tmux ls -F '#S' 2>/dev/null || true)"
+  [ -n "$sessions" ] || return 1
+
+  local -a owlx_sessions=()
+  while read -r sess; do
+    [ -n "$sess" ] || continue
+    is_owlx_session "$sess" || continue
+    owlx_sessions+=("$sess")
+  done <<< "$sessions"
+
+  local sess
+  for sess in "${owlx_sessions[@]}"; do
+    local wt_dir
+    wt_dir="$(tmux_get "$sess" "$OXL_WT_DIR_KEY")"
+    if [ -n "$wt_dir" ] && [ -d "$wt_dir" ]; then
+      local wt_resolved=""
+      if wt_resolved="$(cd "$wt_dir" 2>/dev/null && pwd -P)"; then
+        wt_dir="$wt_resolved"
+      else
+        wt_dir=""
+      fi
+      case "$cwd" in "$wt_dir"|"$wt_dir"/*) echo "$sess"; return 0 ;; esac
+    fi
+  done
+
+  for sess in "${owlx_sessions[@]}"; do
+    local repo_dir
+    repo_dir="$(tmux_get "$sess" "$OXL_REPO_DIR_KEY")"
+    if [ -n "$repo_dir" ] && [ -d "$repo_dir" ]; then
+      local repo_resolved=""
+      if repo_resolved="$(cd "$repo_dir" 2>/dev/null && pwd -P)"; then
+        repo_dir="$repo_resolved"
+      else
+        repo_dir=""
+      fi
+      case "$cwd" in "$repo_dir"|"$repo_dir"/*) echo "$sess"; return 0 ;; esac
+    fi
+  done
+
+  return 1
+}
+
+print_notify_meta() {
+  local sess="$1"
+  local branch="" cat="" intent="" id=""
+  if [ -n "$sess" ]; then
+    branch="$(tmux_get "$sess" "$OXL_BRANCH_KEY")"
+    cat="$(tmux_get "$sess" "$OXL_CAT_KEY")"
+    intent="$(tmux_get "$sess" "$OXL_INTENT_KEY")"
+    id="$(tmux_get "$sess" "$OXL_ID_KEY")"
+  fi
+
+  printf "**session_id**: \`%s\`\n" "$(tsv_escape "$id")"
+  printf "**branch**: \`%s\`\n" "$(tsv_escape "$branch")"
+  printf "**category**: \`%s\`\n" "$(tsv_escape "$cat")"
+  printf "**intent**: %s\n" "$(tsv_escape "$intent")"
 }
 
 cmd_config() {
@@ -1003,6 +1193,7 @@ main() {
     resume)  cmd_resume "$@" ;;
     view)    cmd_view "$@" ;;
     del)     cmd_del "$@" ;;
+    notify)  cmd_notify "$@" ;;
     config)  cmd_config "$@" ;;
     panel)   cmd_panel "$@" ;;
     status)  cmd_status "$@" ;;
