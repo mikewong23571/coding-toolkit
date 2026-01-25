@@ -756,15 +756,17 @@ resolve_notify_session() {
 
 print_notify_meta() {
   local sess="$1"
-  local branch="" cat="" intent="" id=""
+  local branch="" cat="" intent="" id="" repo=""
   if [ -n "$sess" ]; then
     branch="$(tmux_get "$sess" "$OXL_BRANCH_KEY")"
     cat="$(tmux_get "$sess" "$OXL_CAT_KEY")"
     intent="$(tmux_get "$sess" "$OXL_INTENT_KEY")"
     id="$(tmux_get "$sess" "$OXL_ID_KEY")"
+    repo="$(tmux_get "$sess" "$OXL_REPO_KEY")"
   fi
 
   printf "**session_id**: \`%s\`\n" "$(tsv_escape "$id")"
+  printf "**repo**: \`%s\`\n" "$(tsv_escape "$repo")"
   printf "**branch**: \`%s\`\n" "$(tsv_escape "$branch")"
   printf "**category**: \`%s\`\n" "$(tsv_escape "$cat")"
   printf "**intent**: %s\n" "$(tsv_escape "$intent")"
