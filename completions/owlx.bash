@@ -17,7 +17,7 @@ _owlx() {
   subcmd="${COMP_WORDS[1]}"
 
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "new ls search s resume view del config panel status help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "new ls search s resume view del notify config panel status help" -- "$cur") )
     return 0
   fi
 
@@ -98,6 +98,9 @@ _owlx() {
       ;;
     status)
       COMPREPLY=( $(compgen -W "on off toggle --session" -- "$cur") )
+      ;;
+    notify)
+      COMPREPLY=( $(compgen -W "--session --stdin - --topic --url" -- "$cur") )
       ;;
     resume|view|del)
       if command -v tmux >/dev/null 2>&1; then

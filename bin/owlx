@@ -23,6 +23,26 @@ if [ "${OXL_WT_DIRNAME+x}" = "x" ]; then
   OXL_WT_DIRNAME_ENV_SET=1
   OXL_WT_DIRNAME_ENV="$OXL_WT_DIRNAME"
 fi
+OXL_NOTIFY_HOST_ENV_SET=0
+if [ "${OXL_NOTIFY_HOST+x}" = "x" ]; then
+  OXL_NOTIFY_HOST_ENV_SET=1
+  OXL_NOTIFY_HOST_ENV="$OXL_NOTIFY_HOST"
+fi
+OXL_NOTIFY_TOPIC_ENV_SET=0
+if [ "${OXL_NOTIFY_TOPIC+x}" = "x" ]; then
+  OXL_NOTIFY_TOPIC_ENV_SET=1
+  OXL_NOTIFY_TOPIC_ENV="$OXL_NOTIFY_TOPIC"
+fi
+OXL_NOTIFY_TEMPLATE_ENV_SET=0
+if [ "${OXL_NOTIFY_TEMPLATE+x}" = "x" ]; then
+  OXL_NOTIFY_TEMPLATE_ENV_SET=1
+  OXL_NOTIFY_TEMPLATE_ENV="$OXL_NOTIFY_TEMPLATE"
+fi
+OXL_NOTIFY_TEMPLATE_FILE_ENV_SET=0
+if [ "${OXL_NOTIFY_TEMPLATE_FILE+x}" = "x" ]; then
+  OXL_NOTIFY_TEMPLATE_FILE_ENV_SET=1
+  OXL_NOTIFY_TEMPLATE_FILE_ENV="$OXL_NOTIFY_TEMPLATE_FILE"
+fi
 
 if [ -f "$HOME/.owlxrc" ]; then
   # shellcheck source=/dev/null
@@ -35,9 +55,25 @@ fi
 if [ "$OXL_WT_DIRNAME_ENV_SET" -eq 1 ]; then
   OXL_WT_DIRNAME="$OXL_WT_DIRNAME_ENV"
 fi
+if [ "$OXL_NOTIFY_HOST_ENV_SET" -eq 1 ]; then
+  OXL_NOTIFY_HOST="$OXL_NOTIFY_HOST_ENV"
+fi
+if [ "$OXL_NOTIFY_TOPIC_ENV_SET" -eq 1 ]; then
+  OXL_NOTIFY_TOPIC="$OXL_NOTIFY_TOPIC_ENV"
+fi
+if [ "$OXL_NOTIFY_TEMPLATE_ENV_SET" -eq 1 ]; then
+  OXL_NOTIFY_TEMPLATE="$OXL_NOTIFY_TEMPLATE_ENV"
+fi
+if [ "$OXL_NOTIFY_TEMPLATE_FILE_ENV_SET" -eq 1 ]; then
+  OXL_NOTIFY_TEMPLATE_FILE="$OXL_NOTIFY_TEMPLATE_FILE_ENV"
+fi
 
 OXL_ROOT="${OXL_ROOT:-$HOME/projs}"         # layout root
 OXL_WT_DIRNAME="${OXL_WT_DIRNAME:-.worktrees}"
+OXL_NOTIFY_HOST="${OXL_NOTIFY_HOST:-ntfy.local}"
+OXL_NOTIFY_TOPIC="${OXL_NOTIFY_TOPIC:-owlx-alert}"
+OXL_NOTIFY_TEMPLATE="${OXL_NOTIFY_TEMPLATE:-}"
+OXL_NOTIFY_TEMPLATE_FILE="${OXL_NOTIFY_TEMPLATE_FILE:-}"
 OXL_FLAG_KEY="@owlx"                         # meta-tag to mark owlx sessions
 OXL_LAYOUT_KEY="@owlx_layout"
 OXL_REPO_KEY="@owlx_repo"
@@ -75,6 +111,10 @@ OXL_SELF="$OXL_BIN_DIR/$(basename "${BASH_SOURCE[0]}")"
 
 readonly OXL_ROOT
 readonly OXL_WT_DIRNAME
+readonly OXL_NOTIFY_HOST
+readonly OXL_NOTIFY_TOPIC
+readonly OXL_NOTIFY_TEMPLATE
+readonly OXL_NOTIFY_TEMPLATE_FILE
 readonly OXL_FLAG_KEY
 readonly OXL_LAYOUT_KEY
 readonly OXL_REPO_KEY
@@ -140,6 +180,10 @@ Categories:
 Env:
   OXL_ROOT=~/projs                (default)
   OXL_WT_DIRNAME=.worktrees       (default)
+  OXL_NOTIFY_HOST=ntfy.local      (default; used with notify)
+  OXL_NOTIFY_TOPIC=owlx-alert     (default; used with notify)
+  OXL_NOTIFY_TEMPLATE=            (default; optional template)
+  OXL_NOTIFY_TEMPLATE_FILE=       (default; optional template file)
   OXL_PANEL_ON_NEW=1              (default; open panel on new)
   OXL_PANEL_WIDTH=22              (default; percent)
   OXL_PANEL_INTERVAL=1            (default; seconds)
@@ -148,6 +192,10 @@ Env:
   OXL_STATUS_LINES=2              (default; status line rows when enabled)
   OXL_STATUS_RIGHT_LEN=120        (default; intent max length)
   ~/.owlxrc (optional, overrides defaults unless env is set)
+
+Notify template placeholders:
+  {{session}} {{session_id}} {{layout}} {{repo}} {{branch}} {{category}} {{intent}}
+  {{worktree}} {{repo_dir}} {{worktree_dir}}
 
 Examples:
   cd ~/projs/main/coding-toolkit
@@ -289,6 +337,42 @@ tsv_escape() {
   s=${s//$'\n'/ }
   s=${s//$'\r'/ }
   printf '%s' "$s"
+}
+
+render_template() {
+  local template="$1"
+  shift
+  local out="$template"
+  while [ $# -gt 1 ]; do
+    local key="$1" val="$2"
+    shift 2
+    local placeholder="{{${key}}}"
+    local esc="$val"
+    esc="${esc//\\/\\\\}"
+    esc="${esc//&/\\&}"
+    out="${out//${placeholder}/$esc}"
+  done
+  printf '%s' "$out"
+}
+
+expand_tilde() {
+  local path="$1"
+  case "$path" in
+    "~") echo "$HOME" ;;
+    ~/*) echo "$HOME/${path#~/}" ;;
+    *) echo "$path" ;;
+  esac
+}
+
+load_notify_template() {
+  local template="$OXL_NOTIFY_TEMPLATE"
+  local file="${OXL_NOTIFY_TEMPLATE_FILE:-}"
+  if [ -n "$file" ]; then
+    file="$(expand_tilde "$file")"
+    [ -f "$file" ] || die "notify template file not found: $file"
+    template="$(cat "$file")"
+  fi
+  printf '%s' "$template"
 }
 
 json_escape() {
@@ -679,11 +763,16 @@ cmd_notify() {
   fi
 
   if [ -z "$url" ] && [ -z "$topic" ]; then
-    topic="owlx-alert-7m3k9q"
+    topic="$OXL_NOTIFY_TOPIC"
   fi
 
   if [ -z "$url" ] && [ -n "$topic" ]; then
-    url="https://ntfy.sh/$topic"
+    local host="$OXL_NOTIFY_HOST"
+    host="${host%/}"
+    topic="${topic#/}"
+    if [ -n "$host" ]; then
+      url="$host/$topic"
+    fi
   fi
 
   if [ -n "$url" ]; then
@@ -769,20 +858,56 @@ resolve_notify_session() {
 
 print_notify_meta() {
   local sess="$1"
-  local branch="" cat="" intent="" id="" repo=""
+  local branch="" cat="" intent="" id="" repo="" layout="" wt="" repo_dir="" wt_dir=""
   if [ -n "$sess" ]; then
     branch="$(tmux_get "$sess" "$OXL_BRANCH_KEY")"
     cat="$(tmux_get "$sess" "$OXL_CAT_KEY")"
     intent="$(tmux_get "$sess" "$OXL_INTENT_KEY")"
-    id="$(tmux_get "$sess" "$OXL_ID_KEY")"
+    id="$(session_id "$sess")"
     repo="$(tmux_get "$sess" "$OXL_REPO_KEY")"
+    layout="$(tmux_get "$sess" "$OXL_LAYOUT_KEY")"
+    wt="$(tmux_get "$sess" "$OXL_WT_KEY")"
+    repo_dir="$(tmux_get "$sess" "$OXL_REPO_DIR_KEY")"
+    wt_dir="$(tmux_get "$sess" "$OXL_WT_DIR_KEY")"
   fi
 
-  printf "**session_id**: \`%s\`\n" "$(tsv_escape "$id")"
-  printf "**repo**: \`%s\`\n" "$(tsv_escape "$repo")"
-  printf "**branch**: \`%s\`\n" "$(tsv_escape "$branch")"
-  printf "**category**: \`%s\`\n" "$(tsv_escape "$cat")"
-  printf "**intent**: %s\n" "$(tsv_escape "$intent")"
+  local sess_s id_s repo_s branch_s cat_s intent_s layout_s wt_s repo_dir_s wt_dir_s
+  sess_s="$(tsv_escape "$sess")"
+  id_s="$(tsv_escape "$id")"
+  repo_s="$(tsv_escape "$repo")"
+  branch_s="$(tsv_escape "$branch")"
+  cat_s="$(tsv_escape "$cat")"
+  intent_s="$(tsv_escape "$intent")"
+  layout_s="$(tsv_escape "$layout")"
+  wt_s="$(tsv_escape "$wt")"
+  repo_dir_s="$(tsv_escape "$repo_dir")"
+  wt_dir_s="$(tsv_escape "$wt_dir")"
+
+  printf "**session_id**: \`%s\`\n" "$id_s"
+  printf "**repo**: \`%s\`\n" "$repo_s"
+  printf "**branch**: \`%s\`\n" "$branch_s"
+  printf "**category**: \`%s\`\n" "$cat_s"
+  printf "**intent**: %s\n" "$intent_s"
+
+  local template=""
+  template="$(load_notify_template)"
+  if [ -n "$template" ]; then
+    local rendered=""
+    rendered="$(render_template "$template" \
+      "session" "$sess_s" \
+      "session_id" "$id_s" \
+      "layout" "$layout_s" \
+      "repo" "$repo_s" \
+      "branch" "$branch_s" \
+      "category" "$cat_s" \
+      "intent" "$intent_s" \
+      "worktree" "$wt_s" \
+      "repo_dir" "$repo_dir_s" \
+      "worktree_dir" "$wt_dir_s")"
+    if [ -n "$rendered" ]; then
+      printf "\n%s\n" "$rendered"
+    fi
+  fi
 }
 
 cmd_config() {
@@ -794,6 +919,10 @@ cmd_config() {
       echo "config:    $cfg"
       echo "OXL_ROOT:  $OXL_ROOT"
       echo "OXL_WT_DIRNAME: $OXL_WT_DIRNAME"
+      echo "OXL_NOTIFY_HOST: $OXL_NOTIFY_HOST"
+      echo "OXL_NOTIFY_TOPIC: $OXL_NOTIFY_TOPIC"
+      echo "OXL_NOTIFY_TEMPLATE: $OXL_NOTIFY_TEMPLATE"
+      echo "OXL_NOTIFY_TEMPLATE_FILE: $OXL_NOTIFY_TEMPLATE_FILE"
       echo "OXL_STATUS_ON_NEW: $OXL_STATUS_ON_NEW"
       echo "OXL_STATUS_LINES: $OXL_STATUS_LINES"
       echo "OXL_STATUS_RIGHT_LEN: $OXL_STATUS_RIGHT_LEN"
@@ -808,6 +937,10 @@ cmd_config() {
 # owlx config (shell-style assignments)
 OXL_ROOT="$HOME/projs"
 OXL_WT_DIRNAME=".worktrees"
+OXL_NOTIFY_HOST="ntfy.local"
+OXL_NOTIFY_TOPIC="owlx-alert"
+# OXL_NOTIFY_TEMPLATE="[Open session](https://example/{{repo}}/tree/{{branch}})"
+# OXL_NOTIFY_TEMPLATE_FILE="$HOME/.owlx-notify-template.md"
 EOF
       echo "created: $cfg"
       return 0
