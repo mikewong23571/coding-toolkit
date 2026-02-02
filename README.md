@@ -13,7 +13,7 @@ Minimal tmux + git-worktree session runtime built around a single idea:
 
 ```sh
 owlx new [--no-attach] [-C <layout/repo>] <category> <worktree> <intent...>
-owlx ls
+owlx ls [--json]
 owlx search|s [--cd]
 owlx resume <session|id>
 owlx view <session|id>
@@ -34,6 +34,11 @@ owlx status [on|off|toggle] [--session <session|id>]
 ## Notes
 
 - `owlx new` must be run from a repo under `OXL_ROOT/<layout>/<repo>` unless `-C` is provided.
+
+## LS output
+
+`owlx ls --json` prints a JSON array of objects with keys:
+`session`, `id`, `layout`, `repo`, `branch`, `category`, `intent`.
 
 ## Search
 
@@ -124,6 +129,7 @@ owlx new --no-attach research feat-a "prep worktree only"
 owlx new -C main/coding-toolkit research feat-b "prep worktree only"
 cd "$(owlx search)"
 owlx ls
+owlx ls --json
 owlx resume main/coding-toolkit/feat-a
 owlx resume a1b2c3
 owlx view a1b2c3

@@ -60,6 +60,13 @@ _owlx() {
         *) COMPREPLY=() ;;
       esac
       ;;
+    ls)
+      if [ "$COMP_CWORD" -eq 2 ]; then
+        COMPREPLY=( $(compgen -W "--json -j" -- "$cur") )
+      else
+        COMPREPLY=()
+      fi
+      ;;
     search|s)
       if [ "$COMP_CWORD" -eq 2 ]; then
         COMPREPLY=( $(compgen -W "--cd" -- "$cur") )

@@ -112,7 +112,7 @@ resume your intent — faster.
 
 Usage:
   owlx new [--no-attach] [-C <layout/repo>] <category> <worktree> <intent...>
-  owlx ls
+  owlx ls [--json]
   owlx search|s [--cd]
   owlx resume <session|id>
   owlx view <session|id>
@@ -156,6 +156,7 @@ Examples:
   owlx new -C main/coding-toolkit research feat-b "prep worktree only"
   cd "$(owlx search)"
   owlx ls
+  owlx ls --json
   owlx resume main/coding-toolkit/feat-a
   owlx view main/coding-toolkit/feat-a
   owlx del main/coding-toolkit/feat-a
@@ -287,6 +288,18 @@ tsv_escape() {
   s=${s//$'\t'/ }
   s=${s//$'\n'/ }
   s=${s//$'\r'/ }
+  printf '%s' "$s"
+}
+
+json_escape() {
+  local s="$1"
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\b'/\\b}
+  s=${s//$'\f'/\\f}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
   printf '%s' "$s"
 }
 
@@ -1104,9 +1117,58 @@ cmd_view() {
 cmd_ls() {
   require tmux
 
+  local format="table"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json|-j) format="json" ;;
+      -h|--help) usage ;;
+      --) shift; break ;;
+      *) die "unknown flag for ls: $1" ;;
+    esac
+    shift
+  done
+  [ $# -eq 0 ] || usage
+
   local sessions
   sessions="$(tmux ls -F '#S' 2>/dev/null || true)"
-  [ -n "$sessions" ] || return 0
+  if [ -z "$sessions" ]; then
+    if [ "$format" = "json" ]; then
+      printf '[]\n'
+    fi
+    return 0
+  fi
+
+  if [ "$format" = "json" ]; then
+    local first=1
+    printf '['
+    while read -r sess; do
+      [ -n "$sess" ] || continue
+      is_owlx_session "$sess" || continue
+
+      local layout repo branch cat intent id
+      layout="$(tmux_get "$sess" "$OXL_LAYOUT_KEY")"
+      repo="$(tmux_get "$sess" "$OXL_REPO_KEY")"
+      branch="$(tmux_get "$sess" "$OXL_BRANCH_KEY")"
+      cat="$(tmux_get "$sess" "$OXL_CAT_KEY")"
+      intent="$(tmux_get "$sess" "$OXL_INTENT_KEY")"
+      id="$(session_id "$sess")"
+
+      if [ "$first" -eq 0 ]; then
+        printf ','
+      fi
+      first=0
+      printf '{"session":"%s","id":"%s","layout":"%s","repo":"%s","branch":"%s","category":"%s","intent":"%s"}' \
+        "$(json_escape "$sess")" \
+        "$(json_escape "$id")" \
+        "$(json_escape "$layout")" \
+        "$(json_escape "$repo")" \
+        "$(json_escape "$branch")" \
+        "$(json_escape "$cat")" \
+        "$(json_escape "$intent")"
+    done <<< "$sessions"
+    printf ']\n'
+    return 0
+  fi
 
   local use_column=0
   command -v column >/dev/null 2>&1 && use_column=1
