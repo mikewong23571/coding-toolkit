@@ -49,6 +49,15 @@ func newCmdNew() *cobra.Command {
 				return errors.New("intent must be non-empty")
 			}
 
+			if err := requireGit(); err != nil {
+				return err
+			}
+			if !noAttach {
+				if err := requireZellij(); err != nil {
+					return err
+				}
+			}
+
 			ctx := context.Background()
 			cfg := app.Config
 			var layout, repo, repoDir string
@@ -87,8 +96,10 @@ func newCmdNew() *cobra.Command {
 			if _, err := app.Store.FindByToken(sessionName); err == nil {
 				return fmt.Errorf("session already exists: %s", sessionName)
 			}
-			if exists, err := app.Zellij.HasSession(ctx, zellijName); err == nil && exists {
-				return fmt.Errorf("zellij session already exists: %s", zellijName)
+			if !noAttach {
+				if exists, err := app.Zellij.HasSession(ctx, zellijName); err == nil && exists {
+					return fmt.Errorf("zellij session already exists: %s", zellijName)
+				}
 			}
 			if err := git.EnsureWorktreesIgnored(repoDir, cfg.WorktreeDirname); err != nil {
 				return err

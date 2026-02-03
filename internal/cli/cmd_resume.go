@@ -14,6 +14,9 @@ func newCmdResume() *cobra.Command {
 		Short: "attach to a session",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireZellij(); err != nil {
+				return err
+			}
 			session, err := app.Store.FindByToken(args[0])
 			if err != nil {
 				return err

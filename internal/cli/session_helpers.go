@@ -21,6 +21,9 @@ func writeStatusFile(session state.Session) (string, error) {
 
 func ensureLayout(session state.Session) (string, error) {
 	if app.Config.ZellijLayout != "" {
+		if _, err := os.Stat(app.Config.ZellijLayout); err != nil {
+			return "", fmt.Errorf("zellij layout not found: %s", app.Config.ZellijLayout)
+		}
 		return app.Config.ZellijLayout, nil
 	}
 	layoutPath := app.Store.LayoutPath(session.ID)
@@ -35,6 +38,9 @@ func ensureLayout(session state.Session) (string, error) {
 	pluginPath := zellij.ResolveStatusPlugin(app.Config.Status.PluginPath)
 	if pluginPath == "" {
 		return "", fmt.Errorf("status plugin not found (set status.plugin_path or OXL_STATUS_PLUGIN)")
+	}
+	if _, err := os.Stat(pluginPath); err != nil {
+		return "", fmt.Errorf("status plugin not found: %s", pluginPath)
 	}
 
 	opts := zellij.LayoutOptions{

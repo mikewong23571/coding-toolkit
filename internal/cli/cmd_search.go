@@ -21,6 +21,12 @@ func newCmdSearch() *cobra.Command {
 		Use:   "search",
 		Short: "search repos",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := requireGit(); err != nil {
+				return err
+			}
+			if err := requireFzf(); err != nil {
+				return err
+			}
 			ctx := context.Background()
 			root := app.Config.Root
 			if root == "" {

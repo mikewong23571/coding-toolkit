@@ -184,3 +184,7 @@ This uses `npx` to run `markdownlint-cli2` with the repo config.
 Lint:
 
 - `scripts/shellcheck.sh`
+
+## Runtime assumptions
+
+See `docs/assumptions.md` for runtime dependencies and environment assumptions.
