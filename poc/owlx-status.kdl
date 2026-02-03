@@ -1,0 +1,12 @@
+layout {
+    pane size=1 borderless=true {
+        plugin location="zellij:tab-bar"
+    }
+    pane
+    pane size=1 borderless=true {
+        plugin location="file:/home/mikewong/proj/main/coding-toolkit/.worktrees/reft-go-impl/tools/zellij/owlx-status.wasm" {
+            path "/home/mikewong/proj/main/coding-toolkit/.worktrees/reft-go-impl/poc/status-line.txt"
+            interval_ms "1000"
+        }
+    }
+}

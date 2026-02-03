@@ -1,0 +1,4 @@
+/tools/zellij/zellij
+/tools/zellij/*.tar.gz
+/tools/zellij/owlx-status.wasm
+/poc/owlx-status-plugin/target/
