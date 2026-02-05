@@ -37,6 +37,13 @@ func cmdConfig(cfg config.Config, args []string) error {
 		fmt.Printf("config:    %s\n", cfg.RcPath)
 		fmt.Printf("OXL_ROOT:  %s\n", cfg.Root)
 		fmt.Printf("OXL_WT_DIRNAME: %s\n", cfg.WorktreeDirname)
+		fmt.Printf("OXL_NOTIFY_HOST: %s\n", cfg.NotifyHost)
+		fmt.Printf("OXL_NOTIFY_TOPIC: %s\n", cfg.NotifyTopic)
+		fmt.Printf("OXL_NOTIFY_TEMPLATE: %s\n", cfg.NotifyTemplate)
+		fmt.Printf("OXL_NOTIFY_TEMPLATE_FILE: %s\n", cfg.NotifyTemplateFile)
+		fmt.Printf("OXL_NOTIFY_ACTIONS: %s\n", cfg.NotifyActions)
+		fmt.Printf("OXL_NOTIFY_ACTIONS_FILE: %s\n", cfg.NotifyActionsFile)
+		fmt.Printf("OXL_NOTIFY_ALLOW_OUTSIDE: %t\n", cfg.NotifyAllowOutside)
 		fmt.Println("precedence: env > config > defaults")
 		return nil
 	case "init":

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"text/template"
 
 	"owlx/internal/config"
 	"owlx/internal/domain"
@@ -23,6 +24,20 @@ type Options struct {
 	Topic    string
 	URL      string
 	JSON     string
+}
+
+type templateData struct {
+	Session     string
+	SessionID   string
+	Layout      string
+	Repo        string
+	Branch      string
+	Category    string
+	Intent      string
+	Worktree    string
+	RepoDir     string
+	WorktreeDir string
+	Payload     map[string]interface{}
 }
 
 func ParseArgs(args []string) (Options, error) {
@@ -94,6 +109,17 @@ func HandleOptions(cfg config.Config, tm tmux.Manager, opts Options) error {
 		return fmt.Errorf("unsupported notify payload type: %s", typ)
 	}
 
+	if !cfg.NotifyAllowOutside {
+		pane := os.Getenv("TMUX_PANE")
+		if pane == "" {
+			return nil
+		}
+		current := tm.DisplayMessage(pane, "#S")
+		if current == "" || !isOwlxSession(tm, current) {
+			return nil
+		}
+	}
+
 	sess := ""
 	if opts.Session != "" {
 		resolved, err := resolveSession(tm, opts.Session)
@@ -131,7 +157,12 @@ func HandleOptions(cfg config.Config, tm tmux.Manager, opts Options) error {
 		}
 	}
 
-	body, err := printNotifyMeta(cfg, tm, sess)
+	data := buildTemplateData(tm, sess, payload)
+	body, err := renderNotifyBody(cfg, data)
+	if err != nil {
+		return err
+	}
+	actions, err := renderNotifyActions(cfg, data)
 	if err != nil {
 		return err
 	}
@@ -146,6 +177,9 @@ func HandleOptions(cfg config.Config, tm tmux.Manager, opts Options) error {
 	}
 	req.Header.Set("Markdown", "yes")
 	req.Header.Set("Content-Type", "text/markdown")
+	if actions != "" {
+		req.Header.Set("Actions", actions)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -260,7 +294,7 @@ func matchPath(cwd, target string) bool {
 	return false
 }
 
-func printNotifyMeta(cfg config.Config, tm tmux.Manager, sess string) (string, error) {
+func buildTemplateData(tm tmux.Manager, sess string, payload map[string]interface{}) templateData {
 	branch := tm.ShowOption(sess, domain.BranchKey)
 	cat := tm.ShowOption(sess, domain.CatKey)
 	intent := tm.ShowOption(sess, domain.IntentKey)
@@ -271,58 +305,94 @@ func printNotifyMeta(cfg config.Config, tm tmux.Manager, sess string) (string, e
 	repoDir := tm.ShowOption(sess, domain.RepoDirKey)
 	wtDir := tm.ShowOption(sess, domain.WorktreeDirKey)
 
-	sessS := util.TSVEscape(sess)
-	idS := util.TSVEscape(id)
-	repoS := util.TSVEscape(repo)
-	branchS := util.TSVEscape(branch)
-	catS := util.TSVEscape(cat)
-	intentS := util.TSVEscape(intent)
-	layoutS := util.TSVEscape(layout)
-	wtS := util.TSVEscape(wt)
-	repoDirS := util.TSVEscape(repoDir)
-	wtDirS := util.TSVEscape(wtDir)
+	return templateData{
+		Session:     util.TSVEscape(sess),
+		SessionID:   util.TSVEscape(id),
+		Layout:      util.TSVEscape(layout),
+		Repo:        util.TSVEscape(repo),
+		Branch:      util.TSVEscape(branch),
+		Category:    util.TSVEscape(cat),
+		Intent:      util.TSVEscape(intent),
+		Worktree:    util.TSVEscape(wt),
+		RepoDir:     util.TSVEscape(repoDir),
+		WorktreeDir: util.TSVEscape(wtDir),
+		Payload:     payload,
+	}
+}
 
+func renderNotifyBody(cfg config.Config, data templateData) (string, error) {
 	var buf strings.Builder
-	fmt.Fprintf(&buf, "**session_id**: `%s`\n", idS)
-	fmt.Fprintf(&buf, "**repo**: `%s`\n", repoS)
-	fmt.Fprintf(&buf, "**branch**: `%s`\n", branchS)
-	fmt.Fprintf(&buf, "**category**: `%s`\n", catS)
-	fmt.Fprintf(&buf, "**intent**: %s\n", intentS)
+	fmt.Fprintf(&buf, "**session_id**: `%s`\n", data.SessionID)
+	fmt.Fprintf(&buf, "**repo**: `%s`\n", data.Repo)
+	fmt.Fprintf(&buf, "**branch**: `%s`\n", data.Branch)
+	fmt.Fprintf(&buf, "**category**: `%s`\n", data.Category)
+	fmt.Fprintf(&buf, "**intent**: %s\n", data.Intent)
 
-	template, err := loadTemplate(cfg)
+	templateText, err := loadTemplateInlineOrFile(cfg.NotifyTemplate, cfg.NotifyTemplateFile, "notify template")
 	if err != nil {
 		return "", err
 	}
-	if template != "" {
-		rendered := util.RenderTemplate(template, map[string]string{
-			"session":      sessS,
-			"session_id":   idS,
-			"layout":       layoutS,
-			"repo":         repoS,
-			"branch":       branchS,
-			"category":     catS,
-			"intent":       intentS,
-			"worktree":     wtS,
-			"repo_dir":     repoDirS,
-			"worktree_dir": wtDirS,
-		})
-		if rendered != "" {
+	if strings.TrimSpace(templateText) != "" {
+		rendered, err := renderTemplate(templateText, data)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(rendered) != "" {
 			fmt.Fprintf(&buf, "\n%s\n", rendered)
 		}
 	}
 	return buf.String(), nil
 }
 
-func loadTemplate(cfg config.Config) (string, error) {
-	template := cfg.NotifyTemplate
-	if cfg.NotifyTemplateFile == "" {
-		return template, nil
-	}
-	data, err := os.ReadFile(cfg.NotifyTemplateFile)
+func renderNotifyActions(cfg config.Config, data templateData) (string, error) {
+	templateText, err := loadTemplateInlineOrFile(cfg.NotifyActions, cfg.NotifyActionsFile, "notify actions template")
 	if err != nil {
-		return "", fmt.Errorf("notify template file not found: %s", cfg.NotifyTemplateFile)
+		return "", err
+	}
+	if strings.TrimSpace(templateText) == "" {
+		return "", nil
+	}
+	rendered, err := renderTemplate(templateText, data)
+	if err != nil {
+		return "", err
+	}
+	rendered = strings.TrimSpace(rendered)
+	if rendered == "" {
+		return "", nil
+	}
+	rendered = strings.ReplaceAll(rendered, "\n", " ")
+	rendered = strings.ReplaceAll(rendered, "\r", " ")
+	return rendered, nil
+}
+
+func loadTemplateInlineOrFile(inline, path, label string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return inline, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("%s file not found: %s", label, path)
 	}
 	return string(data), nil
+}
+
+func renderTemplate(templateText string, data templateData) (string, error) {
+	tmpl, err := template.New("notify").
+		Funcs(template.FuncMap{
+			"json":  util.JSONEscape,
+			"tsv":   util.TSVEscape,
+			"shell": util.ShellQuote,
+		}).
+		Option("missingkey=zero").
+		Parse(templateText)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 func isOwlxSession(tm tmux.Manager, sess string) bool {

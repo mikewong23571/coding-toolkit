@@ -99,6 +99,17 @@ OXL_ROOT="$HOME/projs"
 OXL_WT_DIRNAME=".worktrees"
 ```
 
+Notify env (optional):
+
+```sh
+OXL_NOTIFY_HOST="https://ntfy.local"
+OXL_NOTIFY_TOPIC="owlx-alert"
+OXL_NOTIFY_TEMPLATE_FILE="$HOME/.owlx-notify-template.md"
+OXL_NOTIFY_ACTIONS="view, Open session, http://10.0.0.1/s/{{.SessionID}}"
+OXL_NOTIFY_ACTIONS_FILE="$HOME/.owlx-notify-actions.txt"
+OXL_NOTIFY_ALLOW_OUTSIDE=1
+```
+
 ## Helpers
 
 ### Config helpers
@@ -139,6 +150,7 @@ Notes:
 
 - Adds a second status line, leaving the default tmux line untouched.
 - Default left widths: layout=10, cat=8, repo=20, branch=20.
+- Notify templates use Go `text/template` with fields like `.SessionID`, `.Repo`, `.Branch`, `.WorktreeDir`, and `.Payload`.
 
 ## Examples
 

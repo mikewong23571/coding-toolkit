@@ -19,6 +19,9 @@ type Config struct {
 	NotifyTopic         string
 	NotifyTemplate      string
 	NotifyTemplateFile  string
+	NotifyActions       string
+	NotifyActionsFile   string
+	NotifyAllowOutside  bool
 	LeftPaneBottomPct   int
 	StatusOnNew         bool
 	StatusLines         int
@@ -88,10 +91,12 @@ func Load() (Config, error) {
 
 	cfg.Root = getString(vals, "OXL_ROOT", defaultRoot)
 	cfg.WorktreeDirname = getString(vals, "OXL_WT_DIRNAME", defaultWorktreeDirname)
-	cfg.NotifyHost = defaultNotifyHost
-	cfg.NotifyTopic = defaultNotifyTopic
-	cfg.NotifyTemplate = ""
-	cfg.NotifyTemplateFile = ""
+	cfg.NotifyHost = getString(vals, "OXL_NOTIFY_HOST", defaultNotifyHost)
+	cfg.NotifyTopic = getString(vals, "OXL_NOTIFY_TOPIC", defaultNotifyTopic)
+	cfg.NotifyTemplate = getString(vals, "OXL_NOTIFY_TEMPLATE", "")
+	cfg.NotifyTemplateFile = getString(vals, "OXL_NOTIFY_TEMPLATE_FILE", "")
+	cfg.NotifyActions = getString(vals, "OXL_NOTIFY_ACTIONS", "")
+	cfg.NotifyActionsFile = getString(vals, "OXL_NOTIFY_ACTIONS_FILE", "")
 	cfg.StatusLeftFmt = defaultStatusLeftFmt
 	cfg.StatusRightFmt = ""
 	cfg.StatusLineFmt = ""
@@ -102,8 +107,15 @@ func Load() (Config, error) {
 	cfg.TmuxConf = filepath.Join(cfg.OwlxDir, "tmux", "default", "tmux.conf")
 	cfg.TmuxSock = filepath.Join(cfg.OwlxDir, "tmux", "default", "tmux.sock")
 
+	allowOutside, err := getBool(vals, "OXL_NOTIFY_ALLOW_OUTSIDE", false)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.NotifyAllowOutside = allowOutside
+
 	cfg.Root = normalizePath(cfg.Root, cfg.HomeDir)
 	cfg.NotifyTemplateFile = normalizePath(cfg.NotifyTemplateFile, cfg.HomeDir)
+	cfg.NotifyActionsFile = normalizePath(cfg.NotifyActionsFile, cfg.HomeDir)
 	cfg.TmuxConf = normalizePath(cfg.TmuxConf, cfg.HomeDir)
 	cfg.TmuxSock = normalizePath(cfg.TmuxSock, cfg.HomeDir)
 
@@ -121,6 +133,13 @@ func readEnv() (map[string]string, map[string]bool) {
 	keys := []string{
 		"OXL_ROOT",
 		"OXL_WT_DIRNAME",
+		"OXL_NOTIFY_HOST",
+		"OXL_NOTIFY_TOPIC",
+		"OXL_NOTIFY_TEMPLATE",
+		"OXL_NOTIFY_TEMPLATE_FILE",
+		"OXL_NOTIFY_ACTIONS",
+		"OXL_NOTIFY_ACTIONS_FILE",
+		"OXL_NOTIFY_ALLOW_OUTSIDE",
 	}
 	vals := map[string]string{}
 	set := map[string]bool{}
