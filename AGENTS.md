@@ -2,24 +2,26 @@
 
 ## Project Structure & Module Organization
 
-- `bin/owlx` is the main Bash CLI entrypoint (tmux + git-worktree workflow).
-- `bin/lint-md` runs Markdown linting for docs.
-- `completions/` holds shell completion scripts (e.g., `completions/owlx.bash`).
+- `owlx` is the main Go CLI binary (tmux + git-worktree workflow).
+- `scripts/lint-md.sh` runs Markdown linting for docs.
+- Shell completion scripts are generated via `owlx completion`.
 - `scripts/` contains developer tooling (e.g., `scripts/shellcheck.sh`).
 - No dedicated `tests/` directory exists today; validation is via linting and manual checks.
 
 ## Build, Test, and Development Commands
 
-- `bin/owlx <command>`: run the CLI locally from the repo.
+- `./owlx <command>`: run the CLI locally from the repo (after `make build`).
 - `scripts/shellcheck.sh`: run ShellCheck over the Bash scripts.
-- `bin/lint-md`: lint Markdown using `markdownlint-cli2` (via `npx`).
+- `scripts/lint-md.sh`: lint Markdown using `markdownlint-cli2` (via `npx`).
 
-Dependencies: `bash`, `git`, and `tmux` are required.
+Dependencies: `bash` (scripts), `go` (build), and `git` (worktrees) are required.
+Embedded tmux is mandatory; system tmux is not used (Linux amd64 only).
 `fzf` is required for `owlx search`, and `npx` is needed for Markdown linting.
 
 ## Coding Style & Naming Conventions
 
-- Language: Bash. Keep `set -euo pipefail` at script tops.
+- Scripts: Bash. Keep `set -euo pipefail` at script tops.
+- Go: standard gofmt formatting; keep helpers small and focused.
 - Indentation: 2 spaces; use `local` for function scope.
 - Naming: `OXL_*` for constants and env vars, lowercase `snake_case` for locals and functions.
 - Prefer small, single-purpose functions and explicit error handling via `die()`.
@@ -28,8 +30,12 @@ Dependencies: `bash`, `git`, and `tmux` are required.
 
 - No automated test suite is present.
 - Run linters before changes:
-  - `scripts/shellcheck.sh` for shell scripts.
-  - `bin/lint-md` for Markdown.
+  - `make lint` (sh + md + go).
+  - `make lint-sh` (ShellCheck).
+  - `make lint-md` (Markdown).
+  - `make lint-go` (gofmt check + `go vet`).
+- Lint workflow: run `make lint` for full checks, or run the specific target
+  if you are only touching shell/markdown/go files.
 - Do a quick manual smoke test for common flows (e.g., `owlx new`, `owlx ls`, `owlx resume`).
 
 ## Commit & Pull Request Guidelines

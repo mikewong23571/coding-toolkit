@@ -1,0 +1,22 @@
+# Build outputs
+/owlx
+
+# Embedded tmux binary (built locally)
+/assets/tmux/**/tmux
+
+# Go test/coverage artifacts
+*.test
+coverage.out
+*.prof
+
+# Editor/OS junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Local temp dirs
+tmp/

@@ -13,16 +13,16 @@ Minimal tmux + git-worktree session runtime built around a single idea:
 
 ```sh
 owlx new [--no-attach] [-C <layout/repo>] <category> <worktree> <intent...>
-owlx ls [--json]
+owlx ls [-o table|wide|json] [--no-header]
 owlx search|s [--cd]
 owlx resume <session|id>
 owlx view <session|id>
 owlx del <session|id>
 owlx notify [--session <session|id>] [--stdin|-] [--topic <name>|--url <url>] <json>
-owlx config [init|edit|tmux|gitignore|completion]
-owlx config completion [install|uninstall]
-owlx panel [on|off|toggle] [--session <session|id>] [--width <pct>]
+owlx config [init|edit|gitignore]
+owlx completion [bash|zsh|fish|powershell]
 owlx status [on|off|toggle] [--session <session|id>]
+owlx version
 ```
 
 ## Layouts
@@ -35,10 +35,34 @@ owlx status [on|off|toggle] [--session <session|id>]
 ## Notes
 
 - `owlx new` must be run from a repo under `OXL_ROOT/<layout>/<repo>` unless `-C` is provided.
+- owlx uses its own tmux socket and config under `~/.owlx/tmux/default/` by default.
+  It always uses the embedded tmux binary on Linux amd64.
+- Embedded tmux is extracted to `~/.local/share/owlx/<buildflag>/libexec/tmux`.
+  Buildflag format: commit[:8] + "-" + build timestamp.
+
+## tmux requirements
+
+owlx requires tmux with the following capabilities:
+
+- Platform: embedded tmux is Linux amd64 only (system tmux is not used).
+- Binary format: embedded tmux must be an ELF executable (magic check at startup).
+- Flags: tmux must support `-S <socket>` and `-f <config>` (owlx always supplies both).
+- Commands used:
+  - `new-session -d -s <name> -c <dir>`
+  - `attach -t <name>`
+  - `has-session`, `ls -F '#S'`
+  - `list-panes -F '#{pane_id}'`
+  - `split-window -h/-v -p <pct> -t <target> -c <dir> -P -F '#{pane_id}'`
+  - `select-pane -t <pane>`
+  - `set-option`, `show-option -qv`, `display-message -p`
+  - `kill-session`, `kill-pane`
+- Static build: tmux must be statically linked with libevent and ncurses/ncursesw.
+
+See `docs/embedded-tmux.md` for details on the embedded static tmux binary and how to update it.
 
 ## LS output
 
-`owlx ls --json` prints a JSON array of objects with keys:
+`owlx ls -o json` prints a JSON array of objects with keys:
 `session`, `id`, `layout`, `repo`, `branch`, `category`, `intent`.
 
 ## Search
@@ -65,16 +89,6 @@ Keep these high-level and orthogonal:
 ```sh
 OXL_ROOT=~/projs                # default
 OXL_WT_DIRNAME=.worktrees       # default
-OXL_NOTIFY_HOST=ntfy.local      # default; used with notify
-OXL_NOTIFY_TOPIC=owlx-alert     # default; used with notify
-OXL_NOTIFY_TEMPLATE=            # default; optional template
-OXL_NOTIFY_TEMPLATE_FILE=       # default; optional template file
-OXL_PANEL_ON_NEW=1              # default; open panel on new
-OXL_PANEL_WIDTH=22              # default; percent
-OXL_LEFT_PANE_BOTTOM_PCT=25     # default; left bottom pane percent
-OXL_STATUS_ON_NEW=0             # default; show info in status line on new
-OXL_STATUS_LINES=2              # default; status rows when enabled
-OXL_STATUS_RIGHT_LEN=120        # default; intent max length
 ~/.owlxrc                        # optional; shell-style overrides
 ```
 
@@ -83,10 +97,6 @@ Example `~/.owlxrc`:
 ```sh
 OXL_ROOT="$HOME/projs"
 OXL_WT_DIRNAME=".worktrees"
-OXL_NOTIFY_HOST="ntfy.local"
-OXL_NOTIFY_TOPIC="owlx-alert"
-# OXL_NOTIFY_TEMPLATE="[Open session](https://example/{{repo}}/tree/{{branch}})"
-# OXL_NOTIFY_TEMPLATE_FILE="$HOME/.owlx-notify-template.md"
 ```
 
 ## Helpers
@@ -97,22 +107,15 @@ OXL_NOTIFY_TOPIC="owlx-alert"
 owlx config          # show effective values + config path
 owlx config init     # write a starter ~/.owlxrc
 owlx config edit     # open ~/.owlxrc in $EDITOR
-owlx config tmux     # print tmux status snippet
-owlx config tmux install
 owlx config gitignore
 owlx config gitignore install
-owlx config completion
-owlx config completion install
-owlx config completion uninstall
+owlx completion bash
 ```
 
-### Panel helpers
+### Version
 
 ```sh
-owlx panel           # toggle right-side info panel (current tmux session)
-owlx panel on        # open panel
-owlx panel off       # close panel
-owlx panel --width 18
+owlx version
 ```
 
 ### Status helpers
@@ -125,23 +128,8 @@ owlx status off      # disable status-line info
 
 ### Notify helpers
 
-`owlx notify` posts Markdown to ntfy. Defaults are driven by
-`OXL_NOTIFY_HOST` and `OXL_NOTIFY_TOPIC`. If `OXL_NOTIFY_HOST` includes a scheme
-(`https://` or `http://`), it is used as-is; otherwise curl defaults to `http`.
-If `OXL_NOTIFY_TEMPLATE_FILE` is set, its content is used as the template;
-otherwise `OXL_NOTIFY_TEMPLATE` is used. The rendered template is appended to
-the message.
-
-Template placeholders:
-`{{session}}`, `{{session_id}}`, `{{layout}}`, `{{repo}}`, `{{branch}}`,
-`{{category}}`, `{{intent}}`, `{{worktree}}`, `{{repo_dir}}`,
-`{{worktree_dir}}`.
-
-Example template file (`~/.owlx-notify-template.md`):
-
-```md
-[Open session](file://{{worktree_dir}})
-```
+`owlx notify` posts Markdown to ntfy. Use `--topic` or `--url` to override the
+default destination.
 
 ```sh
 owlx notify --topic my-topic '{"type":"agent-turn-complete","cwd":"/path"}'
@@ -149,9 +137,8 @@ owlx notify --topic my-topic '{"type":"agent-turn-complete","cwd":"/path"}'
 
 Notes:
 
-- `status on` closes the panel; when `OXL_STATUS_ON_NEW=1`, the panel won't auto-open.
 - Adds a second status line, leaving the default tmux line untouched.
-- Default left widths: layout=10, cat=8, repo=20, branch=20 (override via `OXL_STATUS_LEFT_FMT`).
+- Default left widths: layout=10, cat=8, repo=20, branch=20.
 
 ## Examples
 
@@ -162,7 +149,7 @@ owlx new --no-attach research feat-a "prep worktree only"
 owlx new -C main/coding-toolkit research feat-b "prep worktree only"
 cd "$(owlx search)"
 owlx ls
-owlx ls --json
+owlx ls -o json
 owlx resume main/coding-toolkit/feat-a
 owlx resume a1b2c3
 owlx view a1b2c3
@@ -174,13 +161,39 @@ owlx del a1b2c3
 Run the lint script:
 
 ```sh
-bin/lint-md
+scripts/lint-md.sh
 ```
 
 This uses `npx` to run `markdownlint-cli2` with the repo config.
+Edit `.markdownlint.jsonc` to change rules, or set `MARKDOWNLINT_CONFIG` /
+`MARKDOWNLINT_GLOB` to override the defaults.
 
 ## Development
 
 Lint:
 
-- `scripts/shellcheck.sh`
+- `make lint` (sh + md + go)
+- `make lint-sh` (ShellCheck)
+- `make lint-md` (Markdown)
+- `make lint-go` (gofmt check + `go vet`)
+
+Go:
+
+- Go 1.21+ is required when running from the repo (build `./owlx` with `make build`).
+
+Makefile workflow:
+
+- `make build` (builds `./owlx` with commit/timestamp ldflags)
+- `make test`
+- `make lint`
+- `make tmux-update` (builds embedded tmux via `scripts/build-embedded-tmux.sh`)
+- `make tmux-verify`
+- `make clean` (removes build outputs and embedded tmux artifacts)
+
+`make build` always builds/updates the embedded tmux first. You can provide an
+existing artifact with `TMUX_STRIPPED=/path/to/tmux.*.stripped.gz`. You can also
+set `CLEAN_BUILD=1` to remove the build cache after a successful build.
+
+Embedded tmux versions and defaults live in `assets/tmux/buildinfo.env`. Update it
+to bump tmux/libevent/ncurses/musl or defaults, then run `make tmux-update`.
+`owlx version` prints the embedded tmux metadata.

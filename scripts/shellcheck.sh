@@ -9,4 +9,4 @@ if ! command -v shellcheck >/dev/null 2>&1; then
   exit 127
 fi
 
-shellcheck "$repo_root/bin/owlx"
+shellcheck "$repo_root/scripts/"*.sh
