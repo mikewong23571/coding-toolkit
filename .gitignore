@@ -1,8 +1,12 @@
 # Build outputs
 /owlx
+/bin/
 
 # Embedded tmux binary (built locally)
 /assets/tmux/**/tmux
+
+# Local owlx worktrees (when this repo is used as a workspace root)
+/.worktrees/
 
 # Go test/coverage artifacts
 *.test

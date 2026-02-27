@@ -7,8 +7,14 @@ if ! command -v npx >/dev/null 2>&1; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_FILE="${MARKDOWNLINT_CONFIG:-.markdownlint.jsonc}"
+CONFIG_FILE="${MARKDOWNLINT_CONFIG:-$ROOT_DIR/.markdownlint.jsonc}"
 GLOB_PATTERN="${MARKDOWNLINT_GLOB:-**/*.md}"
+IGNORE_PATTERN="${MARKDOWNLINT_IGNORE_GLOB:-!.worktrees/**}"
 cd "$ROOT_DIR"
 
-npx --yes markdownlint-cli2 --config "$CONFIG_FILE" "$GLOB_PATTERN"
+args=(--config "$CONFIG_FILE" "$GLOB_PATTERN")
+if [ -n "$IGNORE_PATTERN" ]; then
+  args+=("$IGNORE_PATTERN")
+fi
+
+npx --yes markdownlint-cli2 "${args[@]}"

@@ -321,13 +321,6 @@ func buildTemplateData(tm tmux.Manager, sess string, payload map[string]interfac
 }
 
 func renderNotifyBody(cfg config.Config, data templateData) (string, error) {
-	var buf strings.Builder
-	fmt.Fprintf(&buf, "**session_id**: `%s`\n", data.SessionID)
-	fmt.Fprintf(&buf, "**repo**: `%s`\n", data.Repo)
-	fmt.Fprintf(&buf, "**branch**: `%s`\n", data.Branch)
-	fmt.Fprintf(&buf, "**category**: `%s`\n", data.Category)
-	fmt.Fprintf(&buf, "**intent**: %s\n", data.Intent)
-
 	templateText, err := loadTemplateInlineOrFile(cfg.NotifyTemplate, cfg.NotifyTemplateFile, "notify template")
 	if err != nil {
 		return "", err
@@ -338,9 +331,16 @@ func renderNotifyBody(cfg config.Config, data templateData) (string, error) {
 			return "", err
 		}
 		if strings.TrimSpace(rendered) != "" {
-			fmt.Fprintf(&buf, "\n%s\n", rendered)
+			return rendered, nil
 		}
 	}
+
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "**session_id**: `%s`\n", data.SessionID)
+	fmt.Fprintf(&buf, "**repo**: `%s`\n", data.Repo)
+	fmt.Fprintf(&buf, "**branch**: `%s`\n", data.Branch)
+	fmt.Fprintf(&buf, "**category**: `%s`\n", data.Category)
+	fmt.Fprintf(&buf, "**intent**: %s\n", data.Intent)
 	return buf.String(), nil
 }
 
