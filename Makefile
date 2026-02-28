@@ -5,12 +5,31 @@ GOFMT ?= gofmt
 GIT_COMMIT := $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo dev)
 BUILD_TS := $(shell date +%s)
 LDFLAGS := -X owlx/internal/build.Commit=$(GIT_COMMIT) -X owlx/internal/build.Timestamp=$(BUILD_TS)
+HOST_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+HOST_ARCH_RAW := $(shell uname -m)
+ifeq ($(HOST_ARCH_RAW),x86_64)
+HOST_ARCH := amd64
+else ifeq ($(HOST_ARCH_RAW),aarch64)
+HOST_ARCH := arm64
+else
+HOST_ARCH := $(HOST_ARCH_RAW)
+endif
+TARGET_OS := $(if $(GOOS),$(GOOS),$(HOST_OS))
+TARGET_ARCH_RAW := $(if $(GOARCH),$(GOARCH),$(HOST_ARCH))
+ifeq ($(TARGET_ARCH_RAW),x86_64)
+TARGET_ARCH := amd64
+else ifeq ($(TARGET_ARCH_RAW),aarch64)
+TARGET_ARCH := arm64
+else
+TARGET_ARCH := $(TARGET_ARCH_RAW)
+endif
+TMUX_PLATFORM := $(TARGET_OS)_$(TARGET_ARCH)
 
 BUILD_OUT ?= owlx
 TMUX_STATIC_HOME ?= $(HOME)/.cache/owlx/tmux-static
-TMUX_STRIPPED ?= $(TMUX_STATIC_HOME)/bin/tmux.linux-amd64.stripped.gz
+TMUX_STRIPPED ?= $(TMUX_STATIC_HOME)/bin/tmux.$(TARGET_OS)-$(TARGET_ARCH).stripped.gz
 TMUX_META_FILE ?= assets/tmux/buildinfo.env
-TMUX_EMBEDDED ?= assets/tmux/linux_amd64/tmux
+TMUX_EMBEDDED ?= assets/tmux/$(TMUX_PLATFORM)/tmux
 CLEAN_BUILD ?= 0
 
 TMUX_STRIPPED_EXISTS := $(wildcard $(TMUX_STRIPPED))
@@ -46,6 +65,8 @@ govet:
 
 $(TMUX_EMBEDDED): scripts/build-embedded-tmux.sh $(TMUX_META_FILE)
 	TMUX_STRIPPED="$(TMUX_STRIPPED_EXISTS)" \
+	TMUX_TARGET_OS="$(TARGET_OS)" \
+	TMUX_TARGET_ARCH="$(TARGET_ARCH)" \
 	CLEAN_BUILD="$(CLEAN_BUILD)" \
 	TMUX_META_FILE="$(TMUX_META_FILE)" \
 	scripts/build-embedded-tmux.sh
@@ -54,8 +75,10 @@ tmux-update: $(TMUX_EMBEDDED)
 
 tmux-verify: $(TMUX_EMBEDDED) $(TMUX_META_FILE)
 	test -f $(TMUX_EMBEDDED)
-	file $(TMUX_EMBEDDED) | grep -q "ELF 64-bit"
-	file $(TMUX_EMBEDDED) | grep -q "statically linked"
+	file $(TMUX_EMBEDDED) | grep -Eq "ELF 64-bit|Mach-O 64-bit executable"
+	@if [ "$(TARGET_OS)" = "linux" ]; then \
+		file $(TMUX_EMBEDDED) | grep -q "statically linked"; \
+	fi
 	@conf=$$(awk -F= '/^TMUX_DEFAULT_CONF=/{print $$2}' $(TMUX_META_FILE)); \
 	sock=$$(awk -F= '/^TMUX_DEFAULT_SOCK=/{print $$2}' $(TMUX_META_FILE)); \
 	if [ -z "$$conf" ] || [ -z "$$sock" ]; then \

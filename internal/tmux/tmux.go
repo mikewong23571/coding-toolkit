@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"owlx/assets"
@@ -83,7 +84,7 @@ func resolveTmuxBin(cfg config.Config) (string, error) {
 	if !ok {
 		return "", errors.New("embedded tmux not available on this platform")
 	}
-	if !isELF(data) {
+	if !isSupportedBinary(data) {
 		return "", errors.New("embedded tmux placeholder detected; run make tmux-update to install")
 	}
 	path := cfg.DefaultEmbeddedTmux
@@ -140,6 +141,40 @@ func ensureSockDir(path string) error {
 
 func isELF(data []byte) bool {
 	return len(data) > 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F'
+}
+
+func isMachO(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	// 64-bit Mach-O (LE/BE) and fat binaries.
+	switch {
+	case data[0] == 0xcf && data[1] == 0xfa && data[2] == 0xed && data[3] == 0xfe:
+		return true
+	case data[0] == 0xfe && data[1] == 0xed && data[2] == 0xfa && data[3] == 0xcf:
+		return true
+	case data[0] == 0xca && data[1] == 0xfe && data[2] == 0xba && data[3] == 0xbe:
+		return true
+	case data[0] == 0xbe && data[1] == 0xba && data[2] == 0xfe && data[3] == 0xca:
+		return true
+	case data[0] == 0xca && data[1] == 0xfe && data[2] == 0xba && data[3] == 0xbf:
+		return true
+	case data[0] == 0xbf && data[1] == 0xba && data[2] == 0xfe && data[3] == 0xca:
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedBinary(data []byte) bool {
+	switch runtime.GOOS {
+	case "linux":
+		return isELF(data)
+	case "darwin":
+		return isMachO(data)
+	default:
+		return false
+	}
 }
 
 func (m *ExecManager) command(args ...string) *exec.Cmd {

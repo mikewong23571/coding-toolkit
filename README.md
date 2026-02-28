@@ -36,7 +36,7 @@ owlx version
 
 - `owlx new` must be run from a repo under `OXL_ROOT/<layout>/<repo>` unless `-C` is provided.
 - owlx uses its own tmux socket and config under `~/.owlx/tmux/default/` by default.
-  It always uses the embedded tmux binary on Linux amd64.
+  It always uses the embedded tmux binary on supported platforms.
 - Embedded tmux is extracted to `~/.local/share/owlx/<buildflag>/libexec/tmux`.
   Buildflag format: commit[:8] + "-" + build timestamp.
 
@@ -44,8 +44,10 @@ owlx version
 
 owlx requires tmux with the following capabilities:
 
-- Platform: embedded tmux is Linux amd64 only (system tmux is not used).
-- Binary format: embedded tmux must be an ELF executable (magic check at startup).
+- Platform: embedded tmux is supported on `linux/amd64`, `darwin/amd64`,
+  and `darwin/arm64` (system tmux is not used).
+- Binary format: embedded tmux must match platform executable format
+  (ELF on Linux, Mach-O on macOS).
 - Flags: tmux must support `-S <socket>` and `-f <config>` (owlx always supplies both).
 - Commands used:
   - `new-session -d -s <name> -c <dir>`
@@ -56,9 +58,10 @@ owlx requires tmux with the following capabilities:
   - `select-pane -t <pane>`
   - `set-option`, `show-option -qv`, `display-message -p`
   - `kill-session`, `kill-pane`
-- Static build: tmux must be statically linked with libevent and ncurses/ncursesw.
+- Linkage: Linux build is static (musl + libevent + ncurses). macOS builds are
+  fixed-version pinned-source builds.
 
-See `docs/embedded-tmux.md` for details on the embedded static tmux binary and how to update it.
+See `docs/embedded-tmux.md` for details on the embedded tmux binaries and how to update them.
 
 ## LS output
 

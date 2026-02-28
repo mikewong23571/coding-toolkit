@@ -12,11 +12,18 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/build-embedded-tmux.sh
 
-Build or install the embedded static tmux binary at:
-  assets/tmux/linux_amd64/tmux
+Build or install the embedded tmux binary for the current platform at:
+  assets/tmux/<os>_<arch>/tmux
+
+Supported platforms:
+  linux/amd64 (static)
+  darwin/amd64
+  darwin/arm64
 
 Inputs:
   TMUX_STRIPPED          Path to a prebuilt tmux.*.stripped.gz (skips build).
+  TMUX_TARGET_OS         Target OS for embedded install path (optional).
+  TMUX_TARGET_ARCH       Target arch for embedded install path (optional).
   TMUX_META_FILE         Metadata file (default: assets/tmux/buildinfo.env).
   TMUX_STATIC_HOME       Build output root (default: ~/.cache/owlx/tmux-static).
   TMUX_DEFAULT_DIR       Compile-time tmux default dir (default: from TMUX_META_FILE).
@@ -117,30 +124,67 @@ load_meta() {
   done < "$file"
 }
 
-platform() {
-  local os
-  local arch
-
-  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  arch="$(uname -m)"
+normalize_arch() {
+  local arch="$1"
   case "$arch" in
     x86_64) arch="amd64" ;;
     aarch64) arch="arm64" ;;
     *) ;;
   esac
+  printf '%s\n' "$arch"
+}
+
+host_platform() {
+  local os
+  local arch
+
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(normalize_arch "$(uname -m)")"
 
   printf '%s %s\n' "$os" "$arch"
 }
 
-ensure_linux_amd64() {
+platform() {
+  local os
+  local arch
+
+  if [ -n "${TMUX_TARGET_OS:-}" ] || [ -n "${TMUX_TARGET_ARCH:-}" ]; then
+    if [ -z "${TMUX_TARGET_OS:-}" ] || [ -z "${TMUX_TARGET_ARCH:-}" ]; then
+      die "TMUX_TARGET_OS and TMUX_TARGET_ARCH must be set together"
+    fi
+    os="$TMUX_TARGET_OS"
+    arch="$(normalize_arch "$TMUX_TARGET_ARCH")"
+    printf '%s %s\n' "$os" "$arch"
+    return 0
+  fi
+
+  IFS=' ' read -r os arch < <(host_platform)
+
+  printf '%s %s\n' "$os" "$arch"
+}
+
+ensure_supported_platform() {
   local os
   local arch
 
   IFS=' ' read -r os arch < <(platform)
 
-  if [ "$os" != "linux" ] || [ "$arch" != "amd64" ]; then
-    die "only linux/amd64 builds are supported (got ${os}/${arch})"
-  fi
+  case "${os}/${arch}" in
+    linux/amd64|darwin/amd64|darwin/arm64)
+      return 0
+      ;;
+    *)
+      die "unsupported platform: ${os}/${arch} (supported: linux/amd64, darwin/amd64, darwin/arm64)"
+      ;;
+  esac
+}
+
+is_linux_amd64() {
+  local os
+  local arch
+
+  IFS=' ' read -r os arch < <(platform)
+  [ "$os" = "linux" ] && [ "$arch" = "amd64" ]
 }
 
 ensure_tools() {
@@ -273,6 +317,7 @@ build_tmux() {
   local src="${TMUX_STATIC_HOME}/src"
   local j
   local cppflags
+  local -a configure_args
 
   j="$(jobs)"
 
@@ -285,12 +330,19 @@ build_tmux() {
   patch_tmux_sock_path
 
   cppflags="-I${TMUX_STATIC_HOME}/include -DTMUX_CONF=\\\"${TMUX_DEFAULT_CONF}\\\" -DTMUX_SOCK_PATH=\\\"${TMUX_DEFAULT_SOCK}\\\""
+  configure_args=(
+    --prefix="${TMUX_STATIC_HOME}"
+    --includedir="${TMUX_STATIC_HOME}/include"
+    --libdir="${TMUX_STATIC_HOME}/lib"
+  )
+  if is_linux_amd64; then
+    configure_args+=(--enable-static)
+  else
+    configure_args+=(--disable-utf8proc)
+  fi
 
   ./configure \
-    --prefix="${TMUX_STATIC_HOME}" \
-    --enable-static \
-    --includedir="${TMUX_STATIC_HOME}/include" \
-    --libdir="${TMUX_STATIC_HOME}/lib" \
+    "${configure_args[@]}" \
     CFLAGS="-I${TMUX_STATIC_HOME}/include" \
     LDFLAGS="-L${TMUX_STATIC_HOME}/lib" \
     CPPFLAGS="$cppflags" \
@@ -324,20 +376,51 @@ package_tmux() {
 
 install_embedded() {
   local stripped_gz="$1"
-  local out_dir="$ROOT/assets/tmux/linux_amd64"
-  local out="$out_dir/tmux"
+  local os
+  local arch
+  local out_dir
+  local out
+  local sig
+
+  IFS=' ' read -r os arch < <(platform)
+  out_dir="$ROOT/assets/tmux/${os}_${arch}"
+  out="$out_dir/tmux"
 
   mkdir -p "$out_dir"
   gzip -dc "$stripped_gz" > "$out"
   chmod 0755 "$out"
 
   if command -v file >/dev/null 2>&1; then
-    if ! file "$out" | grep -q "ELF 64-bit"; then
-      die "embedded tmux is not ELF 64-bit"
-    fi
-    if ! file "$out" | grep -q "statically linked"; then
-      die "embedded tmux is not statically linked"
-    fi
+    sig="$(file "$out")"
+    case "${os}/${arch}" in
+      linux/amd64)
+        if ! printf '%s' "$sig" | grep -q "ELF 64-bit"; then
+          die "embedded tmux is not ELF 64-bit"
+        fi
+        if ! printf '%s' "$sig" | grep -q "statically linked"; then
+          die "embedded tmux is not statically linked"
+        fi
+        ;;
+      darwin/amd64)
+        if ! printf '%s' "$sig" | grep -q "Mach-O 64-bit executable"; then
+          die "embedded tmux is not Mach-O 64-bit"
+        fi
+        if ! printf '%s' "$sig" | grep -Eq "x86_64|x86-64"; then
+          die "embedded tmux is not amd64"
+        fi
+        ;;
+      darwin/arm64)
+        if ! printf '%s' "$sig" | grep -q "Mach-O 64-bit executable"; then
+          die "embedded tmux is not Mach-O 64-bit"
+        fi
+        if ! printf '%s' "$sig" | grep -Eq "arm64|aarch64"; then
+          die "embedded tmux is not arm64"
+        fi
+        ;;
+      *)
+        die "unsupported platform for embedded install: ${os}/${arch}"
+        ;;
+    esac
   fi
 
   echo "installed embedded tmux: $out"
@@ -380,13 +463,27 @@ main() {
   TMUX_ARCHIVE="tmux-${TMUX_VERSION}.tar.gz"
   TMUX_URL="https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/${TMUX_ARCHIVE}"
 
+  ensure_supported_platform
+
   if [ -z "${TMUX_STRIPPED:-}" ]; then
-    ensure_linux_amd64
+    local target_os
+    local target_arch
+    local host_os
+    local host_arch
+
+    IFS=' ' read -r target_os target_arch < <(platform)
+    IFS=' ' read -r host_os host_arch < <(host_platform)
+    if [ "${target_os}/${target_arch}" != "${host_os}/${host_arch}" ]; then
+      die "cross-platform tmux build is not supported (target ${target_os}/${target_arch}, host ${host_os}/${host_arch}); provide TMUX_STRIPPED"
+    fi
+
     ensure_tools
     prepare_dirs
-    build_musl
 
-    export CC="${TMUX_STATIC_HOME}/bin/musl-gcc -static"
+    if is_linux_amd64; then
+      build_musl
+      export CC="${TMUX_STATIC_HOME}/bin/musl-gcc -static"
+    fi
 
     build_libevent
     build_ncurses
